@@ -1,0 +1,5 @@
+out/
+pressure_field_data/
+data/
+__pycache__/
+env/
