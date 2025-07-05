@@ -3,3 +3,4 @@ pressure_field_data/
 data/
 __pycache__/
 env/
+.DS_Store
