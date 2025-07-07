@@ -1,6 +1,6 @@
 # Octopus
 
-Modified 3D printer hydrophone scanning system that does (https://www.ondacorp.com/scanning-tank/) but 300x cheaper. 
+Modified 3D printer hydrophone scanning system that does (https://www.ondacorp.com/scanning-tank/) but 300x cheaper, excluding hydrophone costs. 
 
 ```bash python measure.py 30 50 30 0.5``` to manually position hydrophone in transducer space origin, and sample pressure field in x=30, y=50, z=30 volume in 30/0.5 x 50/0.5 x 30/0.5 total sampling steps 
 
