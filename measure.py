@@ -4,8 +4,8 @@ measure.py - Volumetric pressure field measurement using 3D printer and oscillos
 Moves a hydrophone through a defined volume and captures pressure data at each voxel
 
 Usage:
-    python measure.py [volume_x volume_y volume_z voxel_size]
-    python measure.py -continue [volume_x volume_y volume_z voxel_size]
+    python measure.py [voxels_x voxels_y voxels_z voxel_size_mm]
+    python measure.py -continue [voxels_x voxels_y voxels_z voxel_size_mm]
 
 Operation:
 1. NO AUTOMATIC HOMING - starts with full manual control from current position
@@ -17,8 +17,15 @@ Operation:
    - Q/+Z moves in +Z direction (positive)
    - E/-Z moves in -Z direction (negative)
    - +/- to increase/decrease step size
+   - M to enter/exit measure mode (counts steps between two points)
 3. Press Enter to set current position as (0,0,0)
-4. Scan sweeps: X from volume_x to 0 (negative direction), Y and Z from 0 to volume_y/z (positive directions)
+4. Scan sweeps: X from voxels_x to 0 (negative direction), Y and Z from 0 to voxels_y/z (positive directions)
+
+Measure Mode:
+- Press 'M' to mark point A and start counting steps
+- Move to desired position using normal controls
+- Press 'M' again to mark point B and display step count vector
+- The system will show the (x,y,z) step count from A to B
 
 Resume capability:
 - The program saves a checkpoint after each voxel measurement
@@ -58,11 +65,11 @@ GENERATOR_SERIAL = '2120'
 # ---------- Configuration ----------
 @dataclass
 class MeasurementConfig:
-    # Volume dimensions (mm)
-    volume_x: float = 20.0  # 2cm
-    volume_z: float = 20.0  # 4cm (updated per your specification)
-    volume_y: float = 30.0  # 2cm  
-    voxel_size: float = 0.1  # 1mm voxels
+    # Volume dimensions (voxels)
+    voxels_x: int = 40  # 40 voxels in X
+    voxels_y: int = 60  # 60 voxels in Y  
+    voxels_z: int = 40  # 40 voxels in Z
+    voxel_size: float = 0.5  # Physical size of each voxel in mm
     
     # Printer settings
     # TODO we don't know the printer serial, so ask the user to input it
@@ -72,8 +79,9 @@ class MeasurementConfig:
     
     @property
     def step_calibration(self) -> float:
+        """Calibration factor to compensate for printer's 1.25x actual movement"""
         base_calibration = 0.915 
-        return base_calibration * self.voxel_size
+        return base_calibration  # Just the calibration factor, not scaled by voxel size
     # Scope settings
     # We know the scope serial
     scope_resource: str = 'USB0::6833::1303::DS1ZE26CM00690::0::INSTR'
@@ -135,6 +143,18 @@ def move_to_position(ser, x, y, z, feed_rate, calibration=1.0):
     send_gcode(ser, f"G1 X{cal_x:.2f} Y{cal_y:.2f} Z{cal_z:.2f} F{feed_rate}")
     send_gcode(ser, "M400")  # Wait for moves to finish
 
+def move_relative(ser, dx, dy, dz, feed_rate, calibration=1.0):
+    """Move by specified delta using relative positioning"""
+    # Apply calibration factor to get accurate movements
+    cal_dx = dx * calibration
+    cal_dy = dy * calibration
+    cal_dz = dz * calibration
+    
+    send_gcode(ser, "G91")  # Switch to relative mode
+    send_gcode(ser, f"G1 X{cal_dx:.2f} Y{cal_dy:.2f} Z{cal_dz:.2f} F{feed_rate}")
+    send_gcode(ser, "G90")  # Switch back to absolute mode
+    send_gcode(ser, "M400")  # Wait for moves to finish
+
 # ---------- Calibration ----------
 def get_key():
     """Read single keypress without Enter"""
@@ -156,7 +176,8 @@ def manual_control_mode(ser, feed_rate, jog_step=1.0, calibration=1.0):
     print("\n╔══════════════════════════════════════════════╗")
     print("║         MANUAL CONTROL INTERFACE             ║")
     print("╚══════════════════════════════════════════════╝")
-    print(f"\nJog step: {jog_step}mm")
+    print(f"\nJog step: {jog_step}mm (matches voxel size)")
+    print(f"Calibration factor: {calibration:.3f}")
     print("\nControls:")
     print("┌─────────────────────────────────────────────┐")
     print("│ A/-X = Move +X (positive direction)         │")
@@ -166,10 +187,15 @@ def manual_control_mode(ser, feed_rate, jog_step=1.0, calibration=1.0):
     print("│ Q/+Z = Move +Z (positive direction)         │")
     print("│ E/-Z = Move -Z (negative direction)         │")
     print("│ +/-  = Increase/decrease jog step size      │")
+    print("│ M    = Start/stop measure mode              │")
     print("│ Enter = Set current position as origin      │")
     print("│ Ctrl+C = Exit program                       │")
     print("└─────────────────────────────────────────────┘")
     print("\nMove to your desired origin position and press Enter")
+    
+    # Measure mode state
+    measure_mode = False
+    step_counter = {'x': 0, 'y': 0, 'z': 0}
     
     try:
         while True:
@@ -183,30 +209,66 @@ def manual_control_mode(ser, feed_rate, jog_step=1.0, calibration=1.0):
                 # Return 0,0,0 since we've redefined the coordinate system
                 return 0.0, 0.0, 0.0
                 
+            elif key.lower() == 'm':  # Measure mode toggle
+                if not measure_mode:
+                    # Start measure mode
+                    measure_mode = True
+                    step_counter = {'x': 0, 'y': 0, 'z': 0}
+                    print(f"\n╔══════════════════════════════════════════════╗")
+                    print(f"║ MEASURE MODE ACTIVATED - Point A marked       ║")
+                    print(f"║ Move to point B and press 'M' again          ║")
+                    print(f"╚══════════════════════════════════════════════╝")
+                else:
+                    # End measure mode - show results
+                    measure_mode = False
+                    print(f"\n╔══════════════════════════════════════════════╗")
+                    print(f"║ MEASURE MODE RESULTS - Point B marked         ║")
+                    print(f"║ Step count from A to B:                      ║")
+                    print(f"║   ({step_counter['x']:+d}, {step_counter['y']:+d}, {step_counter['z']:+d})                            ║")
+                    print(f"╚══════════════════════════════════════════════╝")
+                
             elif key.lower() == 'a':  # A/-X = positive
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 X{jog_step * calibration:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                if measure_mode:
+                    step_counter['x'] += 1
+                    
             elif key.lower() == 'd':  # D/+X = negative
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 X-{jog_step * calibration:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                if measure_mode:
+                    step_counter['x'] -= 1
+                    
             elif key.lower() == 'w':  # W/+Y = positive
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Y{jog_step * calibration:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                if measure_mode:
+                    step_counter['y'] += 1
+                    
             elif key.lower() == 's':  # S/-Y = negative
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Y-{jog_step * calibration:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                if measure_mode:
+                    step_counter['y'] -= 1
+                    
             elif key.lower() == 'q':  # Q/+Z = positive
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Z{jog_step * calibration:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                if measure_mode:
+                    step_counter['z'] += 1
+                    
             elif key.lower() == 'e':  # E/-Z = negative
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Z-{jog_step * calibration:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                if measure_mode:
+                    step_counter['z'] -= 1
+                    
             elif key == '+':
                 jog_step = min(jog_step * 2, 10.0)
                 print(f"\n→ Jog step increased to: {jog_step}mm")
@@ -217,7 +279,10 @@ def manual_control_mode(ser, feed_rate, jog_step=1.0, calibration=1.0):
                 continue
                 
             # Simple feedback
-            print(".", end='', flush=True)
+            if measure_mode:
+                print(f"\r[MEASURE MODE] Steps: ({step_counter['x']:+d}, {step_counter['y']:+d}, {step_counter['z']:+d})", end='', flush=True)
+            else:
+                print(".", end='', flush=True)
     except KeyboardInterrupt:
         print("\n\nProgram interrupted by user. Exiting...")
         raise  # Re-raise to exit the program
@@ -267,9 +332,9 @@ def capture_waveform(scope, channel: int):
 # ---------- Scan Pattern ----------
 def generate_scan_positions(config: MeasurementConfig):
     """Generate voxel positions using serpentine pattern in X-Z plane, then Y"""
-    nx = int(config.volume_x / config.voxel_size)
-    ny = int(config.volume_y / config.voxel_size)
-    nz = int(config.volume_z / config.voxel_size)
+    nx = int(config.voxels_x)
+    ny = int(config.voxels_y)
+    nz = int(config.voxels_z)
     
     # Y only increments (stacking slices)
     for iy in range(ny):
@@ -304,9 +369,9 @@ def generate_scan_positions(config: MeasurementConfig):
 # ---------- Time Estimation ----------
 def estimate_scan_time(config: MeasurementConfig) -> float:
     """Estimate total scan time in seconds"""
-    total_voxels = (config.volume_x / config.voxel_size * 
-                    config.volume_y / config.voxel_size * 
-                    config.volume_z / config.voxel_size)
+    total_voxels = (config.voxels_x * 
+                    config.voxels_y * 
+                    config.voxels_z)
     
     # Time per voxel
     time_per_voxel = (
@@ -354,9 +419,9 @@ def main():
         
         # Example: python measure.py 20 20 40 1.0 (or python measure.py -continue 20 20 40 1.0)
         if len(sys.argv) >= 5:
-            config.volume_x = float(sys.argv[1])
-            config.volume_y = float(sys.argv[2])
-            config.volume_z = float(sys.argv[3])
+            config.voxels_x = int(sys.argv[1])
+            config.voxels_y = int(sys.argv[2])
+            config.voxels_z = int(sys.argv[3])
             config.voxel_size = float(sys.argv[4])
     
     # Handle output directory and checkpoint loading
@@ -370,12 +435,14 @@ def main():
         
         # Load checkpoint
         checkpoint_data = np.load(output_path / 'checkpoint.npy', allow_pickle=True).item()
-        start_index = checkpoint_data['last_index'] + 1
+        # Re-measure the voxel we stopped at; the probe is already there.
+        start_index = checkpoint_data['last_index']
         
         print(f"\n=== RESUMING FROM CHECKPOINT ===")
-        print(f"  Last position: {checkpoint_data['last_position']}")
+        print(f"  Last voxel indices: {checkpoint_data.get('last_indices', 'N/A')}")
+        print(f"  Last position: {checkpoint_data['last_position']} mm")
         print(f"  Last voxel index: {checkpoint_data['last_index']}")
-        print(f"  Resuming from voxel {start_index}/{checkpoint_data['total_voxels']}")
+        print(f"  Re-measuring voxel {start_index}, then continuing to {checkpoint_data['total_voxels']}")
         print(f"  Using output directory: {output_path}")
     else:
         # Create new output directory for fresh start
@@ -384,15 +451,16 @@ def main():
         output_path.mkdir(parents=True, exist_ok=True)
     
     # Calculate scan parameters
-    total_voxels = int(config.volume_x / config.voxel_size * 
-                      config.volume_y / config.voxel_size * 
-                      config.volume_z / config.voxel_size)
+    total_voxels = int(config.voxels_x * 
+                      config.voxels_y * 
+                      config.voxels_z)
     
     estimated_time = estimate_scan_time(config)
     
     print(f"=== Volumetric Pressure Field Measurement ===")
-    print(f"Volume: {config.volume_x}×{config.volume_y}×{config.volume_z} mm")
-    print(f"Scan pattern: X: {config.volume_x}→0 mm, Y: 0→{config.volume_y} mm, Z: 0→{config.volume_z} mm")
+    print(f"Volume: {config.voxels_x}×{config.voxels_y}×{config.voxels_z} voxels")
+    print(f"Physical size: {config.voxels_x * config.voxel_size:.1f}×{config.voxels_y * config.voxel_size:.1f}×{config.voxels_z * config.voxel_size:.1f} mm")
+    print(f"Scan pattern: X: {config.voxels_x}→0 voxels, Y: 0→{config.voxels_y} voxels, Z: 0→{config.voxels_z} voxels")
     print(f"Voxel size: {config.voxel_size} mm")
     print(f"Total voxels: {total_voxels:,}")
     print(f"Step calibration: {config.step_calibration} (compensating for {1.0/config.step_calibration:.2f}x actual movement)")
@@ -411,9 +479,9 @@ def main():
         fn_ctrl.init(port=f'/dev/cu.usbserial-{GENERATOR_SERIAL}')
         
         # Initialize data arrays
-        nx = int(config.volume_x / config.voxel_size)
-        ny = int(config.volume_y / config.voxel_size)
-        nz = int(config.volume_z / config.voxel_size)
+        nx = int(config.voxels_x)
+        ny = int(config.voxels_y)
+        nz = int(config.voxels_z)
     
         # Load existing pressure field or create new one
         if continue_mode and checkpoint_path:
@@ -432,7 +500,10 @@ def main():
         
         # Save configuration
         config_dict = {
-            'volume_mm': [config.volume_x, config.volume_y, config.volume_z],
+            'volume_voxels': [config.voxels_x, config.voxels_y, config.voxels_z],
+            'volume_mm': [config.voxels_x * config.voxel_size, 
+                         config.voxels_y * config.voxel_size, 
+                         config.voxels_z * config.voxel_size],
             'voxel_size_mm': config.voxel_size,
             'shape': [nx, ny, nz],
             'feed_rate_mm_per_min': config.feed_rate,
@@ -450,10 +521,17 @@ def main():
             orig_config = np.load(output_path / 'config.npy', allow_pickle=True).item()
             origin_x, origin_y, origin_z = orig_config.get('origin_mm', [0, 0, 0])
             
-            # Move to last position
+            # The hydrophone is already at the last position - don't move it!
+            # Instead, set the coordinate system so current position = last position
             last_x, last_y, last_z = checkpoint_data['last_position']
-            print(f"\nMoving to last scan position: ({last_x:.1f}, {last_y:.1f}, {last_z:.1f})...")
-            move_to_position(printer, last_x, last_y, last_z, config.feed_rate, config.step_calibration)
+            print(f"\nHydroPhone is at last scan position: ({last_x:.1f}, {last_y:.1f}, {last_z:.1f})")
+            print("Setting coordinate system to match...")
+            
+            # Align printer's logical coordinates with the physical position
+            send_gcode(printer, 
+                      f"G92 X{last_x * config.step_calibration:.3f} "
+                      f"Y{last_y * config.step_calibration:.3f} "
+                      f"Z{last_z * config.step_calibration:.3f}")
             print("Ready to resume scanning.")
         else:
             # Start in full manual control mode
@@ -464,7 +542,12 @@ def main():
             print("The scan will run from there in positive X, Y, Z directions.")
             
             # Get current position from user via manual control
-            origin_x, origin_y, origin_z = manual_control_mode(printer, config.feed_rate, calibration=config.step_calibration)
+            origin_x, origin_y, origin_z = manual_control_mode(
+                printer, 
+                config.feed_rate, 
+                jog_step=config.voxel_size,  # Use voxel size as default jog step
+                calibration=config.step_calibration
+            )
             
             # Save origin position
             config_dict['origin_mm'] = [origin_x, origin_y, origin_z]
@@ -474,12 +557,13 @@ def main():
         if not continue_mode:
             # Display scan information
             print(f"\nScan will run from current origin (0,0,0):")
-            print(f"  X: {config.volume_x:.1f} → 0 mm (reversed direction)")
-            print(f"  Y: 0 → {config.volume_y:.1f} mm")
-            print(f"  Z: 0 → {config.volume_z:.1f} mm")
+            print(f"  X: {config.voxels_x} → 0 voxels ({config.voxels_x * config.voxel_size:.1f} → 0 mm)")
+            print(f"  Y: 0 → {config.voxels_y} voxels (0 → {config.voxels_y * config.voxel_size:.1f} mm)")
+            print(f"  Z: 0 → {config.voxels_z} voxels (0 → {config.voxels_z * config.voxel_size:.1f} mm)")
             print(f"\n⚠️  IMPORTANT: Ensure scan volume fits within printer limits!")
-            print(f"The scan will start at +{config.volume_x}mm in X, then move towards 0.")
-            print(f"It will move {config.volume_y}mm in +Y and {config.volume_z}mm in +Z from current position.")
+            print(f"The scan will start at +{config.voxels_x} voxels ({config.voxels_x * config.voxel_size:.1f} mm) in X,")
+            print(f"then move towards 0. It will move {config.voxels_y} voxels ({config.voxels_y * config.voxel_size:.1f} mm)")
+            print(f"in +Y and {config.voxels_z} voxels ({config.voxels_z * config.voxel_size:.1f} mm) in +Z from current position.")
             
             response = input("\nConfirm scan volume is safe? (Y/n): ")
             if response.lower() == 'n':
@@ -494,9 +578,12 @@ def main():
             try:
                 t1, v1 = capture_waveform(scope, 1)
                 t2, v2 = capture_waveform(scope, 2)
-                test_rms = np.sqrt(np.mean(v1**2))
+                # Remove DC offset before calculating RMS
+                v1_ac = v1 - np.mean(v1)
+                test_rms = np.sqrt(np.mean(v1_ac**2))
                 print(f"Test measurement successful!")
-                print(f"  Ch1 RMS: {test_rms:.4f}V")
+                print(f"  Ch1 DC offset: {np.mean(v1):.4f}V")
+                print(f"  Ch1 RMS (AC): {test_rms:.4f}V")
                 print(f"  Ch1 samples: {len(v1)}")
                 print(f"  Duration: {(t1[-1]-t1[0])*1e6:.1f}μs")
                 
@@ -523,26 +610,61 @@ def main():
         start_time = time.time()
         
         fn_ctrl.resume()
+        
+        # Track current position for relative movements
+        current_x, current_y, current_z = (  # track where we *really* are
+            checkpoint_data['last_position'] if continue_mode and checkpoint_data else (0.0, 0.0, 0.0)
+        )
+        MIN_DELAY = 0.2
+        
+        # For fresh scans, move to the starting position
+        if not continue_mode:
+            # Get the first position from the generator
+            first_pos = next(generate_scan_positions(config))
+            dx, dy, dz = first_pos[0], first_pos[1], first_pos[2]
+            if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+                print(f"Moving to scan start position: ({dx:.1f}, {dy:.1f}, {dz:.1f})...")
+                s = time.time()
+                move_relative(printer, dx, dy, dz,
+                             config.feed_rate, config.step_calibration)
+                move_time = time.time() - s
+                remaining_delay = max(MIN_DELAY - move_time, 0)
+                time.sleep(remaining_delay)
+                current_x, current_y, current_z = first_pos
+        
         # Generate all positions but skip to start_index if continuing
         for idx, (x, y, z) in enumerate(generate_scan_positions(config)):
             # Skip already completed voxels when continuing
             if idx < start_index:
                 continue
-            # Move to scan position (already relative to our origin)
-            s = time.time()
-            move_to_position(printer, x, y, z, config.feed_rate, config.step_calibration)
+                
+            # Δ distance to next voxel
+            dx, dy, dz = x - current_x, y - current_y, z - current_z
             
-            # Calculate remaining delay needed to reach 0.2s total
-            move_time = time.time() - s
-            remaining_delay = max(0.2 - move_time, 0)
-            time.sleep(remaining_delay)
+            if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+                s = time.time()
+                move_relative(printer, dx, dy, dz, 
+                             config.feed_rate, config.step_calibration)
+                move_time = time.time() - s
+                remaining_delay = max(MIN_DELAY - move_time, 0)
+                time.sleep(remaining_delay)
+            else:
+                # Already at target voxel – no motion
+                move_time = 0.0
+                remaining_delay = MIN_DELAY
+                time.sleep(remaining_delay)
+                s = time.time() - MIN_DELAY  # For logging consistency
+            
+            current_x, current_y, current_z = x, y, z
+            
             print(f"Move time: {move_time:.2f}s, Added delay: {remaining_delay:.2f}s")
             print(f"Total time: {time.time() - s:.2f}s")
             
             # Capture measurement
             t1, v1 = capture_waveform(scope, 1)
-            # Process measurement (example: RMS of channel 1)
-            rms_value = np.sqrt(np.mean(v1**2))
+            # Process measurement - Remove DC offset before calculating RMS
+            v1_ac = v1 - np.mean(v1)  # Remove DC component
+            rms_value = np.sqrt(np.mean(v1_ac**2))  # Calculate RMS of AC component
             
             # Store in 3D array
             ix = int(x / config.voxel_size)
@@ -552,7 +674,8 @@ def main():
             
             # Save individual measurement
             voxel_data = {
-                'position_mm': [x, y, z],  # Position in scan volume
+                'voxel_indices': [ix, iy, iz],
+                'position_mm': [x, y, z],  # Physical position in scan volume
                 'time': t1,
                 'ch1_voltage': v1,
                 'rms': rms_value
@@ -576,7 +699,8 @@ def main():
                 eta = elapsed / progress - elapsed if progress > 0 else 0
                 print(f"Progress: {progress*100:.1f}% | "
                       f"Voxel {idx+1}/{total_voxels} | "
-                      f"Position: ({x:.1f}, {y:.1f}, {z:.1f}) | "
+                      f"Indices: ({ix}, {iy}, {iz}) | "
+                      f"Position: ({x:.1f}, {y:.1f}, {z:.1f}) mm | "
                       f"RMS: {rms_value:.3f}V | "
                       f"ETA: {eta/60:.1f} min")
                       

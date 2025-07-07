@@ -269,8 +269,16 @@ class PressureFieldVisualizer:
                 iy = int(parts[2])
                 iz = int(parts[3])
                 
-                # Get RMS value (pressure intensity)
-                rms = data.get('rms', 0.0)
+                # Get voltage data and recalculate RMS correctly
+                if 'ch1_voltage' in data:
+                    v1 = data['ch1_voltage']
+                    # Remove DC offset before calculating RMS
+                    v1_ac = v1 - np.mean(v1)
+                    rms = np.sqrt(np.mean(v1_ac**2))
+                else:
+                    # Fallback to stored RMS (which might be incorrect for old data)
+                    rms = data.get('rms', 0.0)
+                    print(f"Warning: No voltage data found for voxel ({ix}, {iy}, {iz}), using stored RMS")
                 
                 # Update pressure array
                 nx, ny, nz = self.config['shape']

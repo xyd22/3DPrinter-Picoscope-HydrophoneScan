@@ -20,7 +20,7 @@ class PressureFieldVisualizer:
         self.render_window = vtk.vtkRenderWindow()
         self.render_window.AddRenderer(self.renderer)
         self.render_window.SetSize(1024, 768)
-        self.render_window.SetWindowName("Pressure Field Visualization - Focal Point Enhanced")
+        self.render_window.SetWindowName("Pressure Field Visualization - FWHM (-3dB) Emphasis")
         
         self.interactor = vtk.vtkRenderWindowInteractor()
         self.interactor.SetRenderWindow(self.render_window)
@@ -54,7 +54,17 @@ class PressureFieldVisualizer:
                     if len(parts) >= 4:
                         ix, iy, iz = int(parts[1]), int(parts[2]), int(parts[3])
                         data = np.load(voxel_file, allow_pickle=True).item()
-                        self.pressure_field[ix, iy, iz] = data.get('rms', 0.0)
+                        
+                        # Recalculate RMS correctly from voltage data
+                        if 'ch1_voltage' in data:
+                            v1 = data['ch1_voltage']
+                            # Remove DC offset before calculating RMS
+                            v1_ac = v1 - np.mean(v1)
+                            rms = np.sqrt(np.mean(v1_ac**2))
+                            self.pressure_field[ix, iy, iz] = rms
+                        else:
+                            # Fallback to stored RMS (which might be incorrect for old data)
+                            self.pressure_field[ix, iy, iz] = data.get('rms', 0.0)
                 except:
                     pass
                     
@@ -68,7 +78,46 @@ class PressureFieldVisualizer:
         
         # Find focal point (maximum pressure location)
         max_idx = np.unravel_index(np.argmax(self.pressure_field), self.pressure_field.shape)
-        print(f"  Focal point at voxel: {max_idx} with pressure: {self.pressure_field[max_idx]:.6f}")
+        max_pressure = self.pressure_field[max_idx]
+        print(f"  Focal point at voxel: {max_idx} with pressure: {max_pressure:.6f}")
+        
+        # Calculate FWHM (-3dB) threshold and dimensions
+        # -3dB = 10^(-3/20) ≈ 0.708 of maximum value
+        fwhm_threshold = max_pressure * 0.708
+        print(f"\nFWHM Analysis (-3dB threshold):")
+        print(f"  Absolute max pressure: {max_pressure:.6f}")
+        print(f"  FWHM threshold (-3dB): {fwhm_threshold:.6f}")
+        
+        # Find voxels above FWHM threshold
+        fwhm_mask = self.pressure_field >= fwhm_threshold
+        fwhm_voxels = np.where(fwhm_mask)
+        
+        if len(fwhm_voxels[0]) > 0:
+            # Calculate bounding box of FWHM region
+            min_x, max_x = fwhm_voxels[0].min(), fwhm_voxels[0].max()
+            min_y, max_y = fwhm_voxels[1].min(), fwhm_voxels[1].max()
+            min_z, max_z = fwhm_voxels[2].min(), fwhm_voxels[2].max()
+            
+            # Convert to physical dimensions
+            voxel_size = self.config['voxel_size_mm']
+            fwhm_x = (max_x - min_x + 1) * voxel_size
+            fwhm_y = (max_y - min_y + 1) * voxel_size
+            fwhm_z = (max_z - min_z + 1) * voxel_size
+            
+            print(f"  FWHM dimensions:")
+            print(f"    X: {fwhm_x:.2f} mm ({max_x - min_x + 1} voxels)")
+            print(f"    Y: {fwhm_y:.2f} mm ({max_y - min_y + 1} voxels)")
+            print(f"    Z: {fwhm_z:.2f} mm ({max_z - min_z + 1} voxels)")
+            print(f"    Volume: {fwhm_x * fwhm_y * fwhm_z:.2f} mm³")
+            print(f"    Voxel count: {len(fwhm_voxels[0])} voxels")
+            
+            # Store FWHM info for use in opacity function
+            self.fwhm_threshold = fwhm_threshold
+            self.max_pressure = max_pressure
+        else:
+            print("  No voxels found above FWHM threshold")
+            self.fwhm_threshold = max_pressure * 0.5  # Fallback
+            self.max_pressure = max_pressure
         
         return True
         
@@ -122,7 +171,7 @@ class PressureFieldVisualizer:
         return image_data
         
     def create_enhanced_volume_property(self):
-        """Create volume property with enhanced opacity for focal point visualization"""
+        """Create volume property with enhanced opacity for FWHM visualization"""
         volume_property = vtk.vtkVolumeProperty()
         
         # Color transfer function (blue to red through rainbow)
@@ -131,29 +180,31 @@ class PressureFieldVisualizer:
         color_func.AddRGBPoint(0.2, 0.0, 0.5, 1.0)   # Cyan-blue
         color_func.AddRGBPoint(0.4, 0.0, 1.0, 0.5)   # Green-cyan
         color_func.AddRGBPoint(0.6, 0.5, 1.0, 0.0)   # Green-yellow
-        color_func.AddRGBPoint(0.8, 1.0, 0.8, 0.0)   # Yellow
+        color_func.AddRGBPoint(0.708, 1.0, 1.0, 0.0) # Yellow at FWHM (-3dB)
+        color_func.AddRGBPoint(0.8, 1.0, 0.8, 0.0)   # Yellow-orange
         color_func.AddRGBPoint(0.9, 1.0, 0.4, 0.0)   # Orange
         color_func.AddRGBPoint(1.0, 1.0, 0.0, 0.0)   # Red
         
-        # Enhanced opacity transfer function for focal point visibility
+        # Enhanced opacity transfer function emphasizing FWHM region
         opacity_func = vtk.vtkPiecewiseFunction()
-        opacity_func.AddPoint(-0.1, 0.0)   # Unmeasured voxels (fully transparent)
-        opacity_func.AddPoint(0.0, 0.02)   # Minimum pressure (barely visible)
-        opacity_func.AddPoint(0.1, 0.30)   # Very low pressure
-        opacity_func.AddPoint(0.3, 0.3)    # Low pressure (mostly transparent)
-        opacity_func.AddPoint(0.7, 0.3)    # Medium pressure
-        opacity_func.AddPoint(0.7, 0.5)    # Medium-high pressure
-        opacity_func.AddPoint(0.85, 0.65)   # High pressure (focal region)
-        opacity_func.AddPoint(0.95, 0.80)   # Very high pressure (focal core)
-        opacity_func.AddPoint(1.0, 0.95)   # Maximum pressure (focal center)
+        opacity_func.AddPoint(-0.1, 0.0)    # Unmeasured voxels (fully transparent)
+        opacity_func.AddPoint(0.0, 0.0)     # Minimum pressure (transparent)
+        opacity_func.AddPoint(0.1, 0.02)    # Very low pressure (barely visible)
+        opacity_func.AddPoint(0.3, 0.05)    # Low pressure (low opacity)
+        opacity_func.AddPoint(0.5, 0.15)    # Medium pressure (moderate opacity)
+        opacity_func.AddPoint(0.7, 0.25)    # Approaching FWHM
+        opacity_func.AddPoint(0.708, 0.8)   # FWHM threshold (-3dB) - highly visible
+        opacity_func.AddPoint(0.8, 0.85)    # Above FWHM
+        opacity_func.AddPoint(0.9, 0.9)     # High pressure
+        opacity_func.AddPoint(1.0, 0.95)    # Maximum pressure
         
         # Apply a gradient opacity for better edge detection
         gradient_opacity = vtk.vtkPiecewiseFunction()
         gradient_opacity.AddPoint(0.0, 0.0)
         gradient_opacity.AddPoint(0.1, 0.1)
         gradient_opacity.AddPoint(0.3, 0.3)
-        gradient_opacity.AddPoint(0.5, 0.5)
-        gradient_opacity.AddPoint(1.0, 0.8)
+        gradient_opacity.AddPoint(0.708, 0.8)  # Enhanced gradient at FWHM
+        gradient_opacity.AddPoint(1.0, 1.0)
         
         volume_property.SetColor(color_func)
         volume_property.SetScalarOpacity(opacity_func)
@@ -201,7 +252,7 @@ class PressureFieldVisualizer:
         
         scalar_bar = vtk.vtkScalarBarActor()
         scalar_bar.SetLookupTable(lut)
-        scalar_bar.SetTitle("Normalized\nPressure")
+        scalar_bar.SetTitle("Normalized\nPressure\n(FWHM -3dB)")
         scalar_bar.SetNumberOfLabels(6)
         scalar_bar.SetPosition(0.9, 0.1)
         scalar_bar.SetWidth(0.08)
@@ -223,6 +274,7 @@ class PressureFieldVisualizer:
         text_actor = vtk.vtkTextActor()
         info_text = (f"Volume: {nx}×{ny}×{nz} voxels ({voxel_size}mm)\n"
                     f"Pressure range: {self.pressure_field.min():.6f} - {self.pressure_field.max():.6f}\n"
+                    f"FWHM (-3dB): {getattr(self, 'fwhm_threshold', 0):.6f}\n"
                     f"Non-zero voxels: {np.count_nonzero(self.pressure_field)}")
         text_actor.SetInput(info_text)
         text_prop = text_actor.GetTextProperty()
@@ -232,17 +284,17 @@ class PressureFieldVisualizer:
         text_actor.SetPosition(10, 10)
         self.renderer.AddActor2D(text_actor)
         
-        # Add focal point marker
+        # Add FWHM threshold marker
         max_idx = np.unravel_index(np.argmax(self.pressure_field), self.pressure_field.shape)
-        focal_text = vtk.vtkTextActor()
-        focal_text.SetInput(f"Focal point: {max_idx}")
-        focal_prop = focal_text.GetTextProperty()
-        focal_prop.SetFontSize(14)
-        focal_prop.SetColor(1.0, 0.8, 0.0)
-        focal_prop.SetFontFamilyToArial()
-        focal_prop.BoldOn()
-        focal_text.SetPosition(10, 80)
-        self.renderer.AddActor2D(focal_text)
+        fwhm_text = vtk.vtkTextActor()
+        fwhm_text.SetInput(f"FWHM (-3dB) emphasized\nFocal point: {max_idx}")
+        fwhm_prop = fwhm_text.GetTextProperty()
+        fwhm_prop.SetFontSize(14)
+        fwhm_prop.SetColor(1.0, 1.0, 0.0)  # Yellow to match FWHM color
+        fwhm_prop.SetFontFamilyToArial()
+        fwhm_prop.BoldOn()
+        fwhm_text.SetPosition(10, 100)
+        self.renderer.AddActor2D(fwhm_text)
         
     def run(self):
         """Run the visualization"""
@@ -283,14 +335,15 @@ class PressureFieldVisualizer:
         self.interactor.AddObserver('KeyPressEvent', key_press)
         
         # Print instructions
-        print("\nPressure Field Visualization - Enhanced Focal Point")
+        print("\nPressure Field Visualization - FWHM (-3dB) Emphasis")
         print("-" * 50)
         print("Controls:")
         print("  Mouse: Rotate/zoom/pan")
         print("  R: Reset camera")
         print("  F: Focus on focal point")
         print("  Q: Quit")
-        print("\nOpacity scaled to emphasize high-pressure focal regions")
+        print("\nOpacity scaled to emphasize FWHM (-3dB) region")
+        print("Yellow color indicates FWHM threshold region")
         
         # Start interaction
         self.interactor.Initialize()
