@@ -40,8 +40,7 @@ To prevent USB disconnection on long scans:
 - Consider shorter scans or larger voxel sizes for testing
 
 Step calibration:
-- The printer's actual movement is 1.25x the commanded movement
-- A calibration factor of 0.8 is applied to all movements
+- Yudong: calibration factor: X 0.9346; Y 0.8706; Z 0.9308
 - This ensures 1mm commanded = 1mm actual movement
 """
 
@@ -52,15 +51,28 @@ import serial
 import pyvisa
 import datetime
 import pathlib
-import termios
-import tty
+# import tty
+import os
+import ctypes
 from dataclasses import dataclass
 from typing import Generator
-import fn_ctrl
+if os.name != 'nt': # Linux
+    import termios
+    import tty
+else: # Windows
+    import msvcrt
+# import fn_ctrl
+from picoscope_ctrl import *
 
-PRINTER_SERIAL = '2130'
-SCOPE_SERIAL = 'DS1ZE26CM00690'
-GENERATOR_SERIAL = '2120'
+from picosdk.ps5000a import ps5000a as ps
+from picosdk.functions import adc2mV, assert_pico_ok, mV2adc
+
+if os.name != 'nt': # Linux
+    PRINTER_SERIAL = '/dev/cu.usbserial-2130'
+    SCOPE_SERIAL = 'DS1ZE26CM00690'
+    GENERATOR_SERIAL = '2120'
+else: # Windows
+    PRINTER_SERIAL = 'COM10'
 
 # ---------- Configuration ----------
 @dataclass
@@ -73,19 +85,22 @@ class MeasurementConfig:
     
     # Printer settings
     # TODO we don't know the printer serial, so ask the user to input it
-    printer_port: str = f"/dev/cu.usbserial-{PRINTER_SERIAL}"
+    printer_port: str = f"{PRINTER_SERIAL}"
     printer_baud: int = 115200
     feed_rate: int = 3000  # mm/min (50 mm/s)
     
     @property
     def step_calibration(self) -> float:
-        """Calibration factor to compensate for printer's 1.25x actual movement"""
-        base_calibration = 0.915 
-        return base_calibration  # Just the calibration factor, not scaled by voxel size
+        """Calibration factor to compensate for printer's actual movement"""
+        x_calibration = 0.9346
+        y_calibration = 0.8706
+        z_calibration = 0.9308
+        return [x_calibration, y_calibration, z_calibration]  # Just the calibration factor, not scaled by voxel size
     # Scope settings
-    # We know the scope serial
-    scope_resource: str = 'USB0::6833::1303::DS1ZE26CM00690::0::INSTR'
-    capture_duration: float = 10e-6  # 10 microseconds
+    # Create chandle and status ready for use
+    chandle = ctypes.c_int16()
+    status = {}
+    # capture_duration: float = 10e-6  # 10 microseconds
     
     # Timing delays (seconds)
     settling_delay: float = 0.05  # Wait after movement before measurement
@@ -103,8 +118,8 @@ def open_printer(config: MeasurementConfig):
         timeout=5,  # Increased read timeout
         write_timeout=2,
         # Keep DTR/RTS high to maintain connection
-        dsrdtr=True,
-        rtscts=False
+        # dsrdtr=True,
+        # rtscts=False
     )
     time.sleep(2)
     ser.write(b"M155 S0\n")  # Disable temperature reports
@@ -113,12 +128,15 @@ def open_printer(config: MeasurementConfig):
     wait_ok(ser)
     return ser
 
-def wait_ok(ser):
-    """Wait for printer OK response"""
+def wait_ok(ser, timeout=10):
+    """Wait for printer OK response with timeout and debug output"""
+    start_time = time.time()
     while True:
+        if time.time() - start_time > timeout:
+            raise TimeoutError("Timeout waiting for OK from printer")
         try:
-            line = ser.readline().decode().strip()
-            if line == "ok":
+            line = ser.readline().decode(errors='ignore').strip()
+            if line.lower() == "ok":
                 break
         except serial.SerialException as e:
             print(f"Serial error while waiting for OK: {e}")
@@ -134,50 +152,58 @@ def send_gcode(ser, cmd):
         print(f"Serial error during send: {e}")
         raise
 
-def move_to_position(ser, x, y, z, feed_rate, calibration=1.0):
+def move_to_position(ser, x, y, z, feed_rate, calibration=[1.0, 1.0, 1.0]):
     """Move to specified position and wait for completion"""
     # Apply calibration factor to get accurate movements
-    cal_x = x * calibration
-    cal_y = y * calibration
-    cal_z = z * calibration
-    send_gcode(ser, f"G1 X{cal_x:.2f} Y{cal_y:.2f} Z{cal_z:.2f} F{feed_rate}")
+    cal_x = x * calibration[0]
+    cal_y = y * calibration[1]
+    cal_z = z * calibration[2]
+    send_gcode(ser, f"G1 X{cal_x:.3f} Y{cal_y:.3f} Z{cal_z:.3f} F{feed_rate}")
     send_gcode(ser, "M400")  # Wait for moves to finish
 
-def move_relative(ser, dx, dy, dz, feed_rate, calibration=1.0):
+def move_relative(ser, dx, dy, dz, feed_rate, calibration=[1.0, 1.0, 1.0]):
     """Move by specified delta using relative positioning"""
     # Apply calibration factor to get accurate movements
-    cal_dx = dx * calibration
-    cal_dy = dy * calibration
-    cal_dz = dz * calibration
+    cal_dx = dx * calibration[0]
+    cal_dy = dy * calibration[1]
+    cal_dz = dz * calibration[2]
     
     send_gcode(ser, "G91")  # Switch to relative mode
-    send_gcode(ser, f"G1 X{cal_dx:.2f} Y{cal_dy:.2f} Z{cal_dz:.2f} F{feed_rate}")
+    send_gcode(ser, f"G1 X{cal_dx:.3f} Y{cal_dy:.3f} Z{cal_dz:.3f} F{feed_rate}")
     send_gcode(ser, "G90")  # Switch back to absolute mode
     send_gcode(ser, "M400")  # Wait for moves to finish
 
 # ---------- Calibration ----------
 def get_key():
     """Read single keypress without Enter"""
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        key = sys.stdin.read(1)
-        # Check for Ctrl+C (ASCII 3)
-        if ord(key) == 3:
-            raise KeyboardInterrupt()
-        return key
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    if os.name == 'nt':  # Windows
+        key = msvcrt.getch()
+        if key == b'\x03':  # Ctrl+C
+            raise KeyboardInterrupt
+        return key.decode(errors='ignore')
+    else: # Linux
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            key = sys.stdin.read(1)
+            # Check for Ctrl+C (ASCII 3)
+            if ord(key) == 3:
+                raise KeyboardInterrupt()
+            return key
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-def manual_control_mode(ser, feed_rate, jog_step=1.0, calibration=1.0):
+def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration=1.0):
     """Full manual control mode - user positions printer wherever they want"""
+
+    initial_step = jog_step
     
     print("\n╔══════════════════════════════════════════════╗")
     print("║         MANUAL CONTROL INTERFACE             ║")
     print("╚══════════════════════════════════════════════╝")
     print(f"\nJog step: {jog_step}mm (matches voxel size)")
-    print(f"Calibration factor: {calibration:.3f}")
+    print(f"Calibration factor: x: {calibration[0]:.3f}, y: {calibration[1]:.3f}, z: {calibration[2]:.3f}")
     print("\nControls:")
     print("┌─────────────────────────────────────────────┐")
     print("│ A/-X = Move +X (positive direction)         │")
@@ -202,6 +228,11 @@ def manual_control_mode(ser, feed_rate, jog_step=1.0, calibration=1.0):
             key = get_key()
             
             if key == '\r' or key == '\n':  # Enter pressed
+                # send_gcode(ser, "G1 Z30")
+                # Find the maximum output as the "center" (of the cube we are scanning)
+                # Move to the "corner" and set as origin
+                move_relative(ser, -voxels[0] * initial_step / 2, -voxels[1] * initial_step / 2, 
+                                   -voxels[2] * initial_step / 2, feed_rate, calibration)
                 # Set current position as origin (0,0,0)
                 send_gcode(ser, "G92 X0 Y0 Z0")  # Define current position as 0,0,0
                 print(f"\n✓ Current position set as origin (0,0,0)")
@@ -229,43 +260,56 @@ def manual_control_mode(ser, feed_rate, jog_step=1.0, calibration=1.0):
                 
             elif key.lower() == 'a':  # A/-X = positive
                 send_gcode(ser, f"G91")  # Relative mode
-                send_gcode(ser, f"G1 X{jog_step * calibration:.2f} F{feed_rate}")
+                send_gcode(ser, f"G1 X-{jog_step * calibration[0]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
                 if measure_mode:
                     step_counter['x'] += 1
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                     
             elif key.lower() == 'd':  # D/+X = negative
                 send_gcode(ser, f"G91")  # Relative mode
-                send_gcode(ser, f"G1 X-{jog_step * calibration:.2f} F{feed_rate}")
+                send_gcode(ser, f"G1 X{jog_step * calibration[0]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                # print the current output magnitude to decide the maximun position
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['x'] -= 1
                     
             elif key.lower() == 'w':  # W/+Y = positive
                 send_gcode(ser, f"G91")  # Relative mode
-                send_gcode(ser, f"G1 Y{jog_step * calibration:.2f} F{feed_rate}")
+                send_gcode(ser, f"G1 Y{jog_step * calibration[1]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['y'] += 1
                     
             elif key.lower() == 's':  # S/-Y = negative
                 send_gcode(ser, f"G91")  # Relative mode
-                send_gcode(ser, f"G1 Y-{jog_step * calibration:.2f} F{feed_rate}")
+                send_gcode(ser, f"G1 Y-{jog_step * calibration[1]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['y'] -= 1
                     
             elif key.lower() == 'q':  # Q/+Z = positive
                 send_gcode(ser, f"G91")  # Relative mode
-                send_gcode(ser, f"G1 Z{jog_step * calibration:.2f} F{feed_rate}")
+                send_gcode(ser, f"G1 Z{jog_step * calibration[2]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['z'] += 1
                     
             elif key.lower() == 'e':  # E/-Z = negative
                 send_gcode(ser, f"G91")  # Relative mode
-                send_gcode(ser, f"G1 Z-{jog_step * calibration:.2f} F{feed_rate}")
+                send_gcode(ser, f"G1 Z-{jog_step * calibration[2]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['z'] -= 1
                     
@@ -286,48 +330,6 @@ def manual_control_mode(ser, feed_rate, jog_step=1.0, calibration=1.0):
     except KeyboardInterrupt:
         print("\n\nProgram interrupted by user. Exiting...")
         raise  # Re-raise to exit the program
-
-# ---------- Scope Control ----------
-def initialize_scope(config: MeasurementConfig):
-    """Initialize oscilloscope connection and settings"""
-    rm = pyvisa.ResourceManager('@py')
-    scope = rm.open_resource(config.scope_resource)
-    scope.timeout = 10000  # ms
-    scope.chunk_size = 1 << 20  # 1 MiB
-    
-    # Configure time base
-    h_div = 10  # DS1000Z has 10 horizontal divisions
-    scope.write(':TIM:MODE MAIN')
-    scope.write(f':TIM:SCAL {config.capture_duration / h_div}')
-    
-    return scope
-
-def capture_waveform(scope, channel: int):
-    """Capture waveform from specified channel"""
-    scope.write(':STOP')
-    scope.write(f':WAV:SOUR CHAN{channel}')
-    scope.write(':WAV:MODE NORM')  # Screen memory mode
-    scope.write(':WAV:FORM BYTE')
-    
-    # Get scaling factors
-    pre = list(map(float, scope.query(':WAV:PRE?').split(',')))
-    xinc, xorg = pre[4], pre[5]
-    yinc, yorg, yref = pre[7:10]
-    
-    # Read waveform data
-    scope.write(':WAV:DATA?')
-    pound = scope.read_bytes(1)  # '#'
-    ndig = int(scope.read_bytes(1))
-    nbytes = int(scope.read_bytes(ndig))
-    raw = scope.read_bytes(nbytes)
-    
-    # Convert to voltage
-    volts = (np.frombuffer(raw, dtype=np.uint8) - yref) * yinc + yorg
-    time_data = np.arange(volts.size) * xinc + xorg
-    
-    scope.write(':RUN')
-    
-    return time_data, volts
 
 # ---------- Scan Pattern ----------
 def generate_scan_positions(config: MeasurementConfig):
@@ -376,7 +378,7 @@ def estimate_scan_time(config: MeasurementConfig) -> float:
     # Time per voxel
     time_per_voxel = (
         config.settling_delay +  # Wait after movement
-        0.1 +  # Measurement time (approximate)
+        0.2 +  # Measurement time (approximate)
         config.post_measure_delay  # Wait before next move
     )
     
@@ -423,6 +425,7 @@ def main():
             config.voxels_y = int(sys.argv[2])
             config.voxels_z = int(sys.argv[3])
             config.voxel_size = float(sys.argv[4])
+            # real length = voxel * voxel_size * calibration
     
     # Handle output directory and checkpoint loading
     checkpoint_data = None
@@ -463,7 +466,7 @@ def main():
     print(f"Scan pattern: X: {config.voxels_x}→0 voxels, Y: 0→{config.voxels_y} voxels, Z: 0→{config.voxels_z} voxels")
     print(f"Voxel size: {config.voxel_size} mm")
     print(f"Total voxels: {total_voxels:,}")
-    print(f"Step calibration: {config.step_calibration} (compensating for {1.0/config.step_calibration:.2f}x actual movement)")
+    print(f"Step calibration: {config.step_calibration}")
     print(f"Estimated scan time: {estimated_time/60:.1f} minutes")
     print(f"Output directory: {output_path}")
     print()
@@ -475,8 +478,8 @@ def main():
     
     try:
         printer = open_printer(config)
-        scope = initialize_scope(config)
-        fn_ctrl.init(port=f'/dev/cu.usbserial-{GENERATOR_SERIAL}')
+        scope = PicoScope(config.chandle, config.status)
+        # fn_ctrl.init(port=f'/dev/cu.usbserial-{GENERATOR_SERIAL}')
         
         # Initialize data arrays
         nx = int(config.voxels_x)
@@ -508,7 +511,7 @@ def main():
             'shape': [nx, ny, nz],
             'feed_rate_mm_per_min': config.feed_rate,
             'settling_delay_s': config.settling_delay,
-            'capture_duration_s': config.capture_duration,
+            # 'capture_duration_s': config.capture_duration,
             'timestamp': timestamp
         }
         np.save(output_path / 'config.npy', config_dict)
@@ -529,9 +532,9 @@ def main():
             
             # Align printer's logical coordinates with the physical position
             send_gcode(printer, 
-                      f"G92 X{last_x * config.step_calibration:.3f} "
-                      f"Y{last_y * config.step_calibration:.3f} "
-                      f"Z{last_z * config.step_calibration:.3f}")
+                      f"G92 X{last_x * config.step_calibration[0]:.3f} "
+                      f"Y{last_y * config.step_calibration[1]:.3f} "
+                      f"Z{last_z * config.step_calibration[2]:.3f}")
             print("Ready to resume scanning.")
         else:
             # Start in full manual control mode
@@ -543,8 +546,10 @@ def main():
             
             # Get current position from user via manual control
             origin_x, origin_y, origin_z = manual_control_mode(
-                printer, 
+                printer,
+                scope,
                 config.feed_rate, 
+                voxels=[config.voxels_x, config.voxels_y, config.voxels_z],
                 jog_step=config.voxel_size,  # Use voxel size as default jog step
                 calibration=config.step_calibration
             )
@@ -576,16 +581,19 @@ def main():
             # Test measurement at origin
             print("\nPerforming test measurement at origin...")
             try:
-                t1, v1 = capture_waveform(scope, 1)
-                t2, v2 = capture_waveform(scope, 2)
+                # t1, v1 = capture_waveform(scope, 1)
+                # t2, v2 = capture_waveform(scope, 2)
                 # Remove DC offset before calculating RMS
-                v1_ac = v1 - np.mean(v1)
-                test_rms = np.sqrt(np.mean(v1_ac**2))
+                # v1_ac = v1 - np.mean(v1)
+                # test_rms = np.sqrt(np.mean(v1_ac**2))
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
                 print(f"Test measurement successful!")
-                print(f"  Ch1 DC offset: {np.mean(v1):.4f}V")
-                print(f"  Ch1 RMS (AC): {test_rms:.4f}V")
-                print(f"  Ch1 samples: {len(v1)}")
-                print(f"  Duration: {(t1[-1]-t1[0])*1e6:.1f}μs")
+                print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
+                # print(f"  Ch1 DC offset: {np.mean(v1):.4f}V")
+                # print(f"  Ch1 RMS (AC): {test_rms:.4f}V")
+                # print(f"  Ch1 samples: {len(v1)}")
+                # print(f"  Ch1 samples: {len(v1)}")
+                # print(f"  Duration: {(t1[-1]-t1[0])*1e6:.1f}μs")
                 
                 response = input("\nProceed with full scan? (Y/n): ")
                 if response.lower() == 'n':
@@ -609,7 +617,7 @@ def main():
             print("\nStarting measurement scan...")
         start_time = time.time()
         
-        fn_ctrl.resume()
+        # fn_ctrl.resume()
         
         # Track current position for relative movements
         current_x, current_y, current_z = (  # track where we *really* are
@@ -637,7 +645,7 @@ def main():
             # Skip already completed voxels when continuing
             if idx < start_index:
                 continue
-                
+            
             # Δ distance to next voxel
             dx, dy, dz = x - current_x, y - current_y, z - current_z
             
@@ -660,27 +668,29 @@ def main():
             print(f"Move time: {move_time:.2f}s, Added delay: {remaining_delay:.2f}s")
             print(f"Total time: {time.time() - s:.2f}s")
             
-            # Capture measurement
-            t1, v1 = capture_waveform(scope, 1)
-            # Process measurement - Remove DC offset before calculating RMS
-            v1_ac = v1 - np.mean(v1)  # Remove DC component
-            rms_value = np.sqrt(np.mean(v1_ac**2))  # Calculate RMS of AC component
+            # # Capture measurement
+            # t1, v1 = capture_waveform(scope, 1)
+            # # Process measurement - Remove DC offset before calculating RMS
+            # v1_ac = v1 - np.mean(v1)  # Remove DC component
+            # rms_value = np.sqrt(np.mean(v1_ac**2))  # Calculate RMS of AC component
+            chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+            print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
             
             # Store in 3D array
             ix = int(x / config.voxel_size)
             iy = int(y / config.voxel_size)
             iz = int(z / config.voxel_size)
-            pressure_field[ix, iy, iz] = rms_value
+            pressure_field[ix, iy, iz] = chA_ptp_mV
             
             # Save individual measurement
-            voxel_data = {
-                'voxel_indices': [ix, iy, iz],
-                'position_mm': [x, y, z],  # Physical position in scan volume
-                'time': t1,
-                'ch1_voltage': v1,
-                'rms': rms_value
-            }
-            np.save(output_path / f'voxel_{ix:03d}_{iy:03d}_{iz:03d}.npy', voxel_data)
+            # voxel_data = {
+            #     'voxel_indices': [ix, iy, iz],
+            #     'position_mm': [x, y, z],  # Physical position in scan volume
+            #     'time': t1,
+            #     'ch1_voltage': v1,
+            #     'magnitude': chA_ptp_mV
+            # }
+            # np.save(output_path / f'voxel_{ix:03d}_{iy:03d}_{iz:03d}.npy', voxel_data)
             
             # Save checkpoint for resume capability
             checkpoint = {
@@ -701,7 +711,7 @@ def main():
                       f"Voxel {idx+1}/{total_voxels} | "
                       f"Indices: ({ix}, {iy}, {iz}) | "
                       f"Position: ({x:.1f}, {y:.1f}, {z:.1f}) mm | "
-                      f"RMS: {rms_value:.3f}V | "
+                      f"Peak To Peak: {chA_ptp_mV:.3f}mV | "
                       f"ETA: {eta/60:.1f} min")
                       
             # Auto-save partial data every 500 voxels
