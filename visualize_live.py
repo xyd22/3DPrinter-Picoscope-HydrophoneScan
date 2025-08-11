@@ -51,7 +51,10 @@ class PressureFieldVisualizer:
         # Data monitoring
         self.data_dir = None
         self.config = None
-        self.seen_files = set()
+        self.seen_data_points = 0
+        self.seen_data_matrix = None
+        self.pressure_array = None
+        # self.seen_files = set()
         
         # Timer for updates
         self.timer_id = None
@@ -188,7 +191,7 @@ class PressureFieldVisualizer:
         label_prop.SetFontSize(12)
         label_prop.SetColor(1.0, 1.0, 1.0)
         
-        self.renderer.AddActor2D(self.scalar_bar)
+        self.renderer.AddViewProp(self.scalar_bar)
         
     def setup_progress_display(self):
         """Setup progress bar and text display"""
@@ -219,9 +222,9 @@ class PressureFieldVisualizer:
         self.stats_text.SetPosition(10, 70)
         
         # Add to renderer
-        self.renderer.AddActor2D(self.progress_text)
-        self.renderer.AddActor2D(self.progress_bar)
-        self.renderer.AddActor2D(self.stats_text)
+        self.renderer.AddViewProp(self.progress_text)
+        self.renderer.AddViewProp(self.progress_bar)
+        self.renderer.AddViewProp(self.stats_text)
         
     def update_progress_display(self):
         """Update the progress bar and statistics"""
@@ -256,45 +259,35 @@ class PressureFieldVisualizer:
             stats = f"Actual pressure range: {min(values):.6f} - {max(values):.6f} (Δ={max(values)-min(values):.6f})"
             self.stats_text.SetInput(stats)
         
-    def load_voxel_data(self, voxel_path):
+    def load_voxel_data(self, voxel_path, new_index):
         """Load and process a single voxel measurement"""
         try:
-            data = np.load(voxel_path, allow_pickle=True).item()
+            data = np.load(voxel_path)
             
-            # Extract voxel indices from filename
-            filename = voxel_path.stem
-            parts = filename.split('_')
-            if len(parts) >= 4 and parts[0] == 'voxel':
-                ix = int(parts[1])
-                iy = int(parts[2])
-                iz = int(parts[3])
+            # Extract voxel indices
+            ix = new_index[0]
+            iy = new_index[1]
+            iz = new_index[2]
+            
+            # stored peak to peak
+            rms = data[ix, iy, iz]
+            # print(f"Warning: No voltage data found for voxel ({ix}, {iy}, {iz}), using stored RMS")
+            
+            # Update pressure array
+            nx, ny, nz = self.config['shape']
+            if 0 <= ix < nx and 0 <= iy < ny and 0 <= iz < nz:
+                # Calculate linear index (VTK uses Fortran ordering)
+                idx = ix + iy * nx + iz * nx * ny
+                self.pressure_array[idx] = rms
                 
-                # Get voltage data and recalculate RMS correctly
-                if 'ch1_voltage' in data:
-                    v1 = data['ch1_voltage']
-                    # Remove DC offset before calculating RMS
-                    v1_ac = v1 - np.mean(v1)
-                    rms = np.sqrt(np.mean(v1_ac**2))
-                else:
-                    # Fallback to stored RMS (which might be incorrect for old data)
-                    rms = data.get('rms', 0.0)
-                    print(f"Warning: No voltage data found for voxel ({ix}, {iy}, {iz}), using stored RMS")
+                # Track this voxel
+                self.voxel_positions[(ix, iy, iz)] = rms
                 
-                # Update pressure array
-                nx, ny, nz = self.config['shape']
-                if 0 <= ix < nx and 0 <= iy < ny and 0 <= iz < nz:
-                    # Calculate linear index (VTK uses Fortran ordering)
-                    idx = ix + iy * nx + iz * nx * ny
-                    self.pressure_array[idx] = rms
+                # Start timer on first measurement
+                if self.start_time is None:
+                    self.start_time = time.time()
                     
-                    # Track this voxel
-                    self.voxel_positions[(ix, iy, iz)] = rms
-                    
-                    # Start timer on first measurement
-                    if self.start_time is None:
-                        self.start_time = time.time()
-                        
-                    return True
+                return True
                     
         except Exception as e:
             print(f"Error loading voxel data: {e}")
@@ -356,12 +349,32 @@ class PressureFieldVisualizer:
             
         # Check for new voxel files
         new_files_found = False
-        for voxel_file in self.data_dir.glob("voxel_*.npy"):
-            if voxel_file not in self.seen_files:
-                self.seen_files.add(voxel_file)
-                if self.load_voxel_data(voxel_file):
+        try:
+            self.pressure_field = np.load(self.data_dir / "pressure_field_partial.npy")
+            if self.pressure_field.shape != tuple(self.config['shape']):
+                print(f"Shape mismatch: got {self.pressure_field.shape}, expected {self.config['shape']}")
+                return
+        except Exception as e:
+            print(f"Load error: {e}")
+        valid_data_points = np.count_nonzero(self.pressure_field)
+        if self.seen_data_points == 0 : # first time
+            self.seen_data_matrix = np.zeros(self.config['shape'])
+        if valid_data_points > self.seen_data_points:
+            new_data_matrix = (self.pressure_field != 0).astype(int)
+            xor_mask = np.logical_xor(self.seen_data_matrix, new_data_matrix)
+            new_indices = np.argwhere(xor_mask)
+            self.seen_data_points = valid_data_points
+            for new_index in new_indices:
+                if self.load_voxel_data(self.data_dir / "pressure_field_partial.npy", new_index):
+                    self.seen_data_matrix = (self.pressure_field != 0).astype(int)
                     self.measured_voxels += 1
                     new_files_found = True
+        # for voxel_file in self.data_dir.glob("voxel_*.npy"):
+        #     if voxel_file not in self.seen_files:
+        #         self.seen_files.add(voxel_file)
+        #         if self.load_voxel_data(voxel_file):
+        #             self.measured_voxels += 1
+        #             new_files_found = True
                     
         # Update display if new data
         if new_files_found:

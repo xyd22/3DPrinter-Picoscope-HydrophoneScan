@@ -64,6 +64,9 @@ else: # Windows
 # import fn_ctrl
 from picoscope_ctrl import *
 
+# find the package at:
+# https://github.com/picotech/picosdk-python-wrappers
+# follow the instructions to correctly install the package
 from picosdk.ps5000a import ps5000a as ps
 from picosdk.functions import adc2mV, assert_pico_ok, mV2adc
 
@@ -193,6 +196,7 @@ def get_key():
             return key
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
 
 def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration=1.0):
     """Full manual control mode - user positions printer wherever they want"""
@@ -665,8 +669,8 @@ def main():
             
             current_x, current_y, current_z = x, y, z
             
-            print(f"Move time: {move_time:.2f}s, Added delay: {remaining_delay:.2f}s")
-            print(f"Total time: {time.time() - s:.2f}s")
+            # print(f"Move time: {move_time:.2f}s, Added delay: {remaining_delay:.2f}s")
+            print(f"Total time once: {time.time() - s:.2f}s")
             
             # # Capture measurement
             # t1, v1 = capture_waveform(scope, 1)
@@ -686,8 +690,8 @@ def main():
             # voxel_data = {
             #     'voxel_indices': [ix, iy, iz],
             #     'position_mm': [x, y, z],  # Physical position in scan volume
-            #     'time': t1,
-            #     'ch1_voltage': v1,
+            #     # 'time': t1,
+            #     # 'ch1_voltage': v1,
             #     'magnitude': chA_ptp_mV
             # }
             # np.save(output_path / f'voxel_{ix:03d}_{iy:03d}_{iz:03d}.npy', voxel_data)
@@ -714,10 +718,9 @@ def main():
                       f"Peak To Peak: {chA_ptp_mV:.3f}mV | "
                       f"ETA: {eta/60:.1f} min")
                       
-            # Auto-save partial data every 500 voxels
-            if idx % 500 == 0 and idx > 0:
-                np.save(output_path / 'pressure_field_partial.npy', pressure_field)
-                print(f"  → Auto-saved partial data at voxel {idx}")
+            # Auto-save partial data every voxels
+            np.save(output_path / 'pressure_field_partial.npy', pressure_field)
+            print(f"  → Auto-saved partial data at voxel {idx}")
         
         # Save complete pressure field
         np.save(output_path / 'pressure_field.npy', pressure_field)

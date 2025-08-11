@@ -21,21 +21,10 @@ from picoscope_ctrl import *
 from picosdk.ps5000a import ps5000a as ps
 from picosdk.functions import adc2mV, assert_pico_ok, mV2adc
 
-if os.name != 'nt': # Linux
-    PRINTER_SERIAL = '/dev/cu.usbserial-2130'
-    SCOPE_SERIAL = 'DS1ZE26CM00690'
-    GENERATOR_SERIAL = '2120'
-else: # Windows
-    PRINTER_SERIAL = 'COM10'
 
+import numpy as np
+from vtk.util.numpy_support import numpy_to_vtk
 
-
-chandle = ctypes.c_int16()
-status = {}
-scope = PicoScope(chandle, status)
-
-while(1):
-    start = time.time()
-    chA, _ = scope.read_magnitude_avg(num_samples=10)
-    end = time.time()
-    print(end-start, chA)
+arr = np.array([1, 2, 3], dtype=np.float32)
+vtk_arr = numpy_to_vtk(arr)
+print(vtk_arr)
