@@ -114,7 +114,7 @@ def pico_init(chandle, status):
     # enabled = 1
     # source = ps.PS5000A_CHANNEL["PS5000A_CHANNEL_A"]
     source = ps.PS5000A_CHANNEL["PS5000A_CHANNEL_B"]
-    threshold = int(mV2adc(7000, chARange, maxADC))
+    threshold = int(mV2adc(5000, chBRange, maxADC))
     # direction = PS5000A_RISING = 2
     # delay = 0 s
     # auto Trigger = 1000 ms

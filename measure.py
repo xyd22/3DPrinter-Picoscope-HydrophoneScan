@@ -75,7 +75,7 @@ if os.name != 'nt': # Linux
     SCOPE_SERIAL = 'DS1ZE26CM00690'
     GENERATOR_SERIAL = '2120'
 else: # Windows
-    PRINTER_SERIAL = 'COM10'
+    PRINTER_SERIAL = 'COM39'
 
 # ---------- Configuration ----------
 @dataclass
@@ -268,7 +268,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G90")  # Back to absolute mode
                 if measure_mode:
                     step_counter['x'] += 1
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                     
             elif key.lower() == 'd':  # D/+X = negative
@@ -276,7 +276,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G1 X{jog_step * calibration[0]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
                 # print the current output magnitude to decide the maximun position
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['x'] -= 1
@@ -285,7 +285,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Y{jog_step * calibration[1]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['y'] += 1
@@ -294,7 +294,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Y-{jog_step * calibration[1]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['y'] -= 1
@@ -303,7 +303,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Z{jog_step * calibration[2]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['z'] += 1
@@ -312,7 +312,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Z-{jog_step * calibration[2]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['z'] -= 1
@@ -590,7 +590,7 @@ def main():
                 # Remove DC offset before calculating RMS
                 # v1_ac = v1 - np.mean(v1)
                 # test_rms = np.sqrt(np.mean(v1_ac**2))
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
                 print(f"Test measurement successful!")
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 # print(f"  Ch1 DC offset: {np.mean(v1):.4f}V")
@@ -677,7 +677,7 @@ def main():
             # # Process measurement - Remove DC offset before calculating RMS
             # v1_ac = v1 - np.mean(v1)  # Remove DC component
             # rms_value = np.sqrt(np.mean(v1_ac**2))  # Calculate RMS of AC component
-            chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=10)
+            chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
             print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
             
             # Store in 3D array
