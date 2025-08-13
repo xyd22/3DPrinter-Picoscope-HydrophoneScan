@@ -52,12 +52,34 @@ class PressureFieldVisualizer:
         self.data_dir = None
         self.config = None
         self.seen_data_points = 0
-        self.seen_data_matrix = None
+        # self.seen_data_matrix = None
         self.pressure_array = None
+        self.pressure_log_file = None
+        self.pressure_log = None
         # self.seen_files = set()
         
         # Timer for updates
         self.timer_id = None
+
+    def read_log(self):
+        result = []
+        if self.pressure_log_file:
+            self.pressure_log_file.seek(0)
+            for line in self.pressure_log_file:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.strip("()").split(",")
+                if len(parts) == 4:
+                    try:
+                        ix = int(parts[0].strip())
+                        iy = int(parts[1].strip())
+                        iz = int(parts[2].strip())
+                        value = float(parts[3].strip())
+                        result.append([ix, iy, iz, value])
+                    except ValueError:
+                        pass
+        return result
         
     def find_latest_measurement_dir(self):
         """Find the most recent measurement directory"""
@@ -259,38 +281,38 @@ class PressureFieldVisualizer:
             stats = f"Actual pressure range: {min(values):.6f} - {max(values):.6f} (Δ={max(values)-min(values):.6f})"
             self.stats_text.SetInput(stats)
         
-    def load_voxel_data(self, voxel_path, new_index):
+    def load_voxel_data(self, new_data):
         """Load and process a single voxel measurement"""
-        try:
-            data = np.load(voxel_path)
+        # try:
+        # data = np.load(voxel_path)
+        
+        # Extract voxel indices
+        ix = new_data[0]
+        iy = new_data[1]
+        iz = new_data[2]
+        
+        # stored peak to peak
+        rms = new_data[3]
+        # print(f"Warning: No voltage data found for voxel ({ix}, {iy}, {iz}), using stored RMS")
+        
+        # Update pressure array
+        nx, ny, nz = self.config['shape']
+        if 0 <= ix < nx and 0 <= iy < ny and 0 <= iz < nz:
+            # Calculate linear index (VTK uses Fortran ordering)
+            idx = ix + iy * nx + iz * nx * ny
+            self.pressure_array[idx] = rms
             
-            # Extract voxel indices
-            ix = new_index[0]
-            iy = new_index[1]
-            iz = new_index[2]
+            # Track this voxel
+            self.voxel_positions[(ix, iy, iz)] = rms
             
-            # stored peak to peak
-            rms = data[ix, iy, iz]
-            # print(f"Warning: No voltage data found for voxel ({ix}, {iy}, {iz}), using stored RMS")
-            
-            # Update pressure array
-            nx, ny, nz = self.config['shape']
-            if 0 <= ix < nx and 0 <= iy < ny and 0 <= iz < nz:
-                # Calculate linear index (VTK uses Fortran ordering)
-                idx = ix + iy * nx + iz * nx * ny
-                self.pressure_array[idx] = rms
+            # Start timer on first measurement
+            if self.start_time is None:
+                self.start_time = time.time()
                 
-                # Track this voxel
-                self.voxel_positions[(ix, iy, iz)] = rms
+            return True
                 
-                # Start timer on first measurement
-                if self.start_time is None:
-                    self.start_time = time.time()
-                    
-                return True
-                    
-        except Exception as e:
-            print(f"Error loading voxel data: {e}")
+        # except Exception as e:
+        #     print(f"Error loading voxel data: {e}")
             
         return False
         
@@ -340,6 +362,7 @@ class PressureFieldVisualizer:
             self.data_dir = self.find_latest_measurement_dir()
             if self.data_dir:
                 config_path = self.data_dir / "config.npy"
+                self.pressure_log_file = open(self.data_dir / "pressure_field.log", "a+", buffering=1)
                 if self.load_config(config_path):
                     self.setup_volume()
                     print(f"Monitoring: {self.data_dir}")
@@ -350,23 +373,16 @@ class PressureFieldVisualizer:
         # Check for new voxel files
         new_files_found = False
         try:
-            self.pressure_field = np.load(self.data_dir / "pressure_field_partial.npy")
-            if self.pressure_field.shape != tuple(self.config['shape']):
-                print(f"Shape mismatch: got {self.pressure_field.shape}, expected {self.config['shape']}")
-                return
+            self.pressure_log = self.read_log()
         except Exception as e:
             print(f"Load error: {e}")
-        valid_data_points = np.count_nonzero(self.pressure_field)
-        if self.seen_data_points == 0 : # first time
-            self.seen_data_matrix = np.zeros(self.config['shape'])
+        valid_data_points = len(self.pressure_log)
         if valid_data_points > self.seen_data_points:
-            new_data_matrix = (self.pressure_field != 0).astype(int)
-            xor_mask = np.logical_xor(self.seen_data_matrix, new_data_matrix)
-            new_indices = np.argwhere(xor_mask)
+            new_data_line = self.pressure_log[self.seen_data_points : valid_data_points]
+            new_indices = [[data_line[0], data_line[1], data_line[2]] for data_line in new_data_line]
             self.seen_data_points = valid_data_points
-            for new_index in new_indices:
-                if self.load_voxel_data(self.data_dir / "pressure_field_partial.npy", new_index):
-                    self.seen_data_matrix = (self.pressure_field != 0).astype(int)
+            for pressure_data_line in new_data_line:
+                if self.load_voxel_data(pressure_data_line):
                     self.measured_voxels += 1
                     new_files_found = True
         # for voxel_file in self.data_dir.glob("voxel_*.npy"):

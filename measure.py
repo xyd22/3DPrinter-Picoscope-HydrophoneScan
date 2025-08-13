@@ -75,7 +75,7 @@ if os.name != 'nt': # Linux
     SCOPE_SERIAL = 'DS1ZE26CM00690'
     GENERATOR_SERIAL = '2120'
 else: # Windows
-    PRINTER_SERIAL = 'COM39'
+    PRINTER_SERIAL = 'COM10'
 
 # ---------- Configuration ----------
 @dataclass
@@ -268,7 +268,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G90")  # Back to absolute mode
                 if measure_mode:
                     step_counter['x'] += 1
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg()
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                     
             elif key.lower() == 'd':  # D/+X = negative
@@ -276,7 +276,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G1 X{jog_step * calibration[0]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
                 # print the current output magnitude to decide the maximun position
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg()
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['x'] -= 1
@@ -285,7 +285,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Y{jog_step * calibration[1]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg()
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['y'] += 1
@@ -294,7 +294,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Y-{jog_step * calibration[1]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg()
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['y'] -= 1
@@ -303,7 +303,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Z{jog_step * calibration[2]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg()
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['z'] += 1
@@ -312,7 +312,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
                 send_gcode(ser, f"G91")  # Relative mode
                 send_gcode(ser, f"G1 Z-{jog_step * calibration[2]:.2f} F{feed_rate}")
                 send_gcode(ser, f"G90")  # Back to absolute mode
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg()
                 print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
                 if measure_mode:
                     step_counter['z'] -= 1
@@ -365,12 +365,12 @@ def generate_scan_positions(config: MeasurementConfig):
                 # Sweep from 0 to X
                 for ix in range(nx):
                     x = ix * config.voxel_size
-                    yield x, y, z
+                    yield x, y, z, ix, iy, iz
             else:
                 # Sweep from X to 0
                 for ix in reversed(range(nx)):
                     x = ix * config.voxel_size
-                    yield x, y, z
+                    yield x, y, z, ix, iy, iz
 
 # ---------- Time Estimation ----------
 def estimate_scan_time(config: MeasurementConfig) -> float:
@@ -459,8 +459,8 @@ def main():
     
     # Calculate scan parameters
     total_voxels = int(config.voxels_x * 
-                      config.voxels_y * 
-                      config.voxels_z)
+                       config.voxels_y * 
+                       config.voxels_z)
     
     estimated_time = estimate_scan_time(config)
     
@@ -479,287 +479,294 @@ def main():
     print("Initializing devices...")
     printer = None
     scope = None
-    
-    try:
-        printer = open_printer(config)
-        scope = PicoScope(config.chandle, config.status)
-        # fn_ctrl.init(port=f'/dev/cu.usbserial-{GENERATOR_SERIAL}')
+
+    with open(output_path / "pressure_field.log", "a", buffering=1) as pressure_log:
+        try:
+            printer = open_printer(config)
+            scope = PicoScope(config.chandle, config.status)
+            # fn_ctrl.init(port=f'/dev/cu.usbserial-{GENERATOR_SERIAL}')
+            
+            # Initialize data arrays
+            nx = int(config.voxels_x)
+            ny = int(config.voxels_y)
+            nz = int(config.voxels_z)
         
-        # Initialize data arrays
-        nx = int(config.voxels_x)
-        ny = int(config.voxels_y)
-        nz = int(config.voxels_z)
-    
-        # Load existing pressure field or create new one
-        if continue_mode and checkpoint_path:
-            # Try to load partial pressure field
-            partial_path = output_path / 'pressure_field_partial.npy'
-            if partial_path.exists():
-                pressure_field = np.load(partial_path)
-                print(f"  Loaded existing partial pressure field")
+            # Load existing pressure field or create new one
+            if continue_mode and checkpoint_path:
+                # Try to load partial pressure field
+                partial_path = output_path / 'pressure_field_partial.npy'
+                if partial_path.exists():
+                    pressure_field = np.load(partial_path)
+                    print(f"  Loaded existing partial pressure field")
+                else:
+                    # Initialize new but load any existing voxel data
+                    pressure_field = np.zeros((nx, ny, nz))
+                    print(f"  No partial field found, reconstructing from voxel files...")
+                    # Could reconstruct from individual voxel files here if needed
             else:
-                # Initialize new but load any existing voxel data
                 pressure_field = np.zeros((nx, ny, nz))
-                print(f"  No partial field found, reconstructing from voxel files...")
-                # Could reconstruct from individual voxel files here if needed
-        else:
-            pressure_field = np.zeros((nx, ny, nz))
-        
-        # Save configuration
-        config_dict = {
-            'volume_voxels': [config.voxels_x, config.voxels_y, config.voxels_z],
-            'volume_mm': [config.voxels_x * config.voxel_size, 
-                         config.voxels_y * config.voxel_size, 
-                         config.voxels_z * config.voxel_size],
-            'voxel_size_mm': config.voxel_size,
-            'shape': [nx, ny, nz],
-            'feed_rate_mm_per_min': config.feed_rate,
-            'settling_delay_s': config.settling_delay,
-            # 'capture_duration_s': config.capture_duration,
-            'timestamp': timestamp
-        }
-        np.save(output_path / 'config.npy', config_dict)
-        
-        if continue_mode and checkpoint_data:
-            # Skip manual control in continue mode
-            print("\n=== SKIPPING MANUAL CALIBRATION (CONTINUE MODE) ===")
             
-            # Load original config to get origin
-            orig_config = np.load(output_path / 'config.npy', allow_pickle=True).item()
-            origin_x, origin_y, origin_z = orig_config.get('origin_mm', [0, 0, 0])
-            
-            # The hydrophone is already at the last position - don't move it!
-            # Instead, set the coordinate system so current position = last position
-            last_x, last_y, last_z = checkpoint_data['last_position']
-            print(f"\nHydroPhone is at last scan position: ({last_x:.1f}, {last_y:.1f}, {last_z:.1f})")
-            print("Setting coordinate system to match...")
-            
-            # Align printer's logical coordinates with the physical position
-            send_gcode(printer, 
-                      f"G92 X{last_x * config.step_calibration[0]:.3f} "
-                      f"Y{last_y * config.step_calibration[1]:.3f} "
-                      f"Z{last_z * config.step_calibration[2]:.3f}")
-            print("Ready to resume scanning.")
-        else:
-            # Start in full manual control mode
-            print("\n=== MANUAL CONTROL MODE ===")
-            print("You have full control of the printer.")
-            print("Position the hydrophone at your desired origin (0,0,0) for the scan.")
-            print("\nNote: The system will treat your accepted position as (0,0,0)")
-            print("The scan will run from there in positive X, Y, Z directions.")
-            
-            # Get current position from user via manual control
-            origin_x, origin_y, origin_z = manual_control_mode(
-                printer,
-                scope,
-                config.feed_rate, 
-                voxels=[config.voxels_x, config.voxels_y, config.voxels_z],
-                jog_step=config.voxel_size,  # Use voxel size as default jog step
-                calibration=config.step_calibration
-            )
-            
-            # Save origin position
-            config_dict['origin_mm'] = [origin_x, origin_y, origin_z]
+            # Save configuration
+            config_dict = {
+                'volume_voxels': [config.voxels_x, config.voxels_y, config.voxels_z],
+                'volume_mm': [config.voxels_x * config.voxel_size, 
+                            config.voxels_y * config.voxel_size, 
+                            config.voxels_z * config.voxel_size],
+                'voxel_size_mm': config.voxel_size,
+                'shape': [nx, ny, nz],
+                'feed_rate_mm_per_min': config.feed_rate,
+                'settling_delay_s': config.settling_delay,
+                # 'capture_duration_s': config.capture_duration,
+                'timestamp': timestamp
+            }
             np.save(output_path / 'config.npy', config_dict)
-        
-        # Skip confirmations if continuing
-        if not continue_mode:
-            # Display scan information
-            print(f"\nScan will run from current origin (0,0,0):")
-            print(f"  X: {config.voxels_x} → 0 voxels ({config.voxels_x * config.voxel_size:.1f} → 0 mm)")
-            print(f"  Y: 0 → {config.voxels_y} voxels (0 → {config.voxels_y * config.voxel_size:.1f} mm)")
-            print(f"  Z: 0 → {config.voxels_z} voxels (0 → {config.voxels_z * config.voxel_size:.1f} mm)")
-            print(f"\n⚠️  IMPORTANT: Ensure scan volume fits within printer limits!")
-            print(f"The scan will start at +{config.voxels_x} voxels ({config.voxels_x * config.voxel_size:.1f} mm) in X,")
-            print(f"then move towards 0. It will move {config.voxels_y} voxels ({config.voxels_y * config.voxel_size:.1f} mm)")
-            print(f"in +Y and {config.voxels_z} voxels ({config.voxels_z * config.voxel_size:.1f} mm) in +Z from current position.")
             
-            response = input("\nConfirm scan volume is safe? (Y/n): ")
-            if response.lower() == 'n':
-                print("Scan aborted.")
-                send_gcode(printer, "M84")  # Disable steppers
-                printer.close()
-                scope.close()
-                return
-            
-            # Test measurement at origin
-            print("\nPerforming test measurement at origin...")
-            try:
-                # t1, v1 = capture_waveform(scope, 1)
-                # t2, v2 = capture_waveform(scope, 2)
-                # Remove DC offset before calculating RMS
-                # v1_ac = v1 - np.mean(v1)
-                # test_rms = np.sqrt(np.mean(v1_ac**2))
-                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
-                print(f"Test measurement successful!")
-                print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
-                # print(f"  Ch1 DC offset: {np.mean(v1):.4f}V")
-                # print(f"  Ch1 RMS (AC): {test_rms:.4f}V")
-                # print(f"  Ch1 samples: {len(v1)}")
-                # print(f"  Ch1 samples: {len(v1)}")
-                # print(f"  Duration: {(t1[-1]-t1[0])*1e6:.1f}μs")
+            if continue_mode and checkpoint_data:
+                # Skip manual control in continue mode
+                print("\n=== SKIPPING MANUAL CALIBRATION (CONTINUE MODE) ===")
                 
-                response = input("\nProceed with full scan? (Y/n): ")
+                # Load original config to get origin
+                orig_config = np.load(output_path / 'config.npy', allow_pickle=True).item()
+                origin_x, origin_y, origin_z = orig_config.get('origin_mm', [0, 0, 0])
+                
+                # The hydrophone is already at the last position - don't move it!
+                # Instead, set the coordinate system so current position = last position
+                last_x, last_y, last_z = checkpoint_data['last_position']
+                print(f"\nHydroPhone is at last scan position: ({last_x:.1f}, {last_y:.1f}, {last_z:.1f})")
+                print("Setting coordinate system to match...")
+                
+                # Align printer's logical coordinates with the physical position
+                send_gcode(printer, 
+                        f"G92 X{last_x * config.step_calibration[0]:.3f} "
+                        f"Y{last_y * config.step_calibration[1]:.3f} "
+                        f"Z{last_z * config.step_calibration[2]:.3f}")
+                print("Ready to resume scanning.")
+            else:
+                # Start in full manual control mode
+                print("\n=== MANUAL CONTROL MODE ===")
+                print("You have full control of the printer.")
+                print("Position the hydrophone at your desired origin (0,0,0) for the scan.")
+                print("\nNote: The system will treat your accepted position as (0,0,0)")
+                print("The scan will run from there in positive X, Y, Z directions.")
+                
+                # Get current position from user via manual control
+                origin_x, origin_y, origin_z = manual_control_mode(
+                    printer,
+                    scope,
+                    config.feed_rate, 
+                    voxels=[config.voxels_x, config.voxels_y, config.voxels_z],
+                    jog_step=config.voxel_size,  # Use voxel size as default jog step
+                    calibration=config.step_calibration
+                )
+                
+                # Save origin position
+                config_dict['origin_mm'] = [origin_x, origin_y, origin_z]
+                np.save(output_path / 'config.npy', config_dict)
+            
+            # Skip confirmations if continuing
+            if not continue_mode:
+                # Display scan information
+                print(f"\nScan will run from current origin (0,0,0):")
+                print(f"  X: {config.voxels_x} → 0 voxels ({config.voxels_x * config.voxel_size:.1f} → 0 mm)")
+                print(f"  Y: 0 → {config.voxels_y} voxels (0 → {config.voxels_y * config.voxel_size:.1f} mm)")
+                print(f"  Z: 0 → {config.voxels_z} voxels (0 → {config.voxels_z * config.voxel_size:.1f} mm)")
+                print(f"\n⚠️  IMPORTANT: Ensure scan volume fits within printer limits!")
+                print(f"The scan will start at +{config.voxels_x} voxels ({config.voxels_x * config.voxel_size:.1f} mm) in X,")
+                print(f"then move towards 0. It will move {config.voxels_y} voxels ({config.voxels_y * config.voxel_size:.1f} mm)")
+                print(f"in +Y and {config.voxels_z} voxels ({config.voxels_z * config.voxel_size:.1f} mm) in +Z from current position.")
+                
+                response = input("\nConfirm scan volume is safe? (Y/n): ")
                 if response.lower() == 'n':
                     print("Scan aborted.")
                     send_gcode(printer, "M84")  # Disable steppers
                     printer.close()
                     scope.close()
                     return
-            except Exception as e:
-                print(f"⚠️  Test measurement failed: {e}")
-                print("Please check oscilloscope connection and settings.")
-                send_gcode(printer, "M84")  # Disable steppers
-                printer.close()
-                scope.close()
-                return
-        
-        # Main measurement loop
-        if continue_mode:
-            print(f"\nResuming measurement scan from voxel {start_index}...")
-        else:
-            print("\nStarting measurement scan...")
-        start_time = time.time()
-        
-        # fn_ctrl.resume()
-        
-        # Track current position for relative movements
-        current_x, current_y, current_z = (  # track where we *really* are
-            checkpoint_data['last_position'] if continue_mode and checkpoint_data else (0.0, 0.0, 0.0)
-        )
-        MIN_DELAY = 0.2
-        
-        # For fresh scans, move to the starting position
-        if not continue_mode:
-            # Get the first position from the generator
-            first_pos = next(generate_scan_positions(config))
-            dx, dy, dz = first_pos[0], first_pos[1], first_pos[2]
-            if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
-                print(f"Moving to scan start position: ({dx:.1f}, {dy:.1f}, {dz:.1f})...")
-                s = time.time()
-                move_relative(printer, dx, dy, dz,
-                             config.feed_rate, config.step_calibration)
-                move_time = time.time() - s
-                remaining_delay = max(MIN_DELAY - move_time, 0)
-                time.sleep(remaining_delay)
-                current_x, current_y, current_z = first_pos
-        
-        # Generate all positions but skip to start_index if continuing
-        for idx, (x, y, z) in enumerate(generate_scan_positions(config)):
-            # Skip already completed voxels when continuing
-            if idx < start_index:
-                continue
+                
+                # Test measurement at origin
+                print("\nPerforming test measurement at origin...")
+                try:
+                    # t1, v1 = capture_waveform(scope, 1)
+                    # t2, v2 = capture_waveform(scope, 2)
+                    # Remove DC offset before calculating RMS
+                    # v1_ac = v1 - np.mean(v1)
+                    # test_rms = np.sqrt(np.mean(v1_ac**2))
+                    chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg()
+                    print(f"Test measurement successful!")
+                    print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
+                    # print(f"  Ch1 DC offset: {np.mean(v1):.4f}V")
+                    # print(f"  Ch1 RMS (AC): {test_rms:.4f}V")
+                    # print(f"  Ch1 samples: {len(v1)}")
+                    # print(f"  Ch1 samples: {len(v1)}")
+                    # print(f"  Duration: {(t1[-1]-t1[0])*1e6:.1f}μs")
+                    
+                    response = input("\nProceed with full scan? (Y/n): ")
+                    if response.lower() == 'n':
+                        print("Scan aborted.")
+                        send_gcode(printer, "M84")  # Disable steppers
+                        printer.close()
+                        scope.close()
+                        return
+                except Exception as e:
+                    print(f"⚠️  Test measurement failed: {e}")
+                    print("Please check oscilloscope connection and settings.")
+                    send_gcode(printer, "M84")  # Disable steppers
+                    printer.close()
+                    scope.close()
+                    return
             
-            # Δ distance to next voxel
-            dx, dy, dz = x - current_x, y - current_y, z - current_z
-            
-            if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
-                s = time.time()
-                move_relative(printer, dx, dy, dz, 
-                             config.feed_rate, config.step_calibration)
-                move_time = time.time() - s
-                remaining_delay = max(MIN_DELAY - move_time, 0)
-                time.sleep(remaining_delay)
+            # Main measurement loop
+            if continue_mode:
+                print(f"\nResuming measurement scan from voxel {start_index}...")
             else:
-                # Already at target voxel – no motion
-                move_time = 0.0
-                remaining_delay = MIN_DELAY
-                time.sleep(remaining_delay)
-                s = time.time() - MIN_DELAY  # For logging consistency
+                print("\nStarting measurement scan...")
+            start_time = time.time()
             
-            current_x, current_y, current_z = x, y, z
+            # fn_ctrl.resume()
             
-            # print(f"Move time: {move_time:.2f}s, Added delay: {remaining_delay:.2f}s")
-            print(f"Total time once: {time.time() - s:.2f}s")
+            # Track current position for relative movements
+            current_x, current_y, current_z = (  # track where we *really* are
+                checkpoint_data['last_position'] if continue_mode and checkpoint_data else (0.0, 0.0, 0.0)
+            )
+            MIN_DELAY = 0.2
             
-            # # Capture measurement
-            # t1, v1 = capture_waveform(scope, 1)
-            # # Process measurement - Remove DC offset before calculating RMS
-            # v1_ac = v1 - np.mean(v1)  # Remove DC component
-            # rms_value = np.sqrt(np.mean(v1_ac**2))  # Calculate RMS of AC component
-            chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg(num_samples=20)
-            print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
+            # For fresh scans, move to the starting position
+            if not continue_mode:
+                # Get the first position from the generator
+                first_pos = next(generate_scan_positions(config)) # (x, y, z, ix, iy, iz)
+                dx, dy, dz = first_pos[0], first_pos[1], first_pos[2]
+                if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+                    print(f"Moving to scan start position: ({dx:.1f}, {dy:.1f}, {dz:.1f})...")
+                    s = time.time()
+                    move_relative(printer, dx, dy, dz,
+                                config.feed_rate, config.step_calibration)
+                    move_time = time.time() - s
+                    remaining_delay = max(MIN_DELAY - move_time, 0)
+                    time.sleep(remaining_delay)
+                    current_x, current_y, current_z = first_pos
             
-            # Store in 3D array
-            ix = int(x / config.voxel_size)
-            iy = int(y / config.voxel_size)
-            iz = int(z / config.voxel_size)
-            pressure_field[ix, iy, iz] = chA_ptp_mV
+            # Generate all positions but skip to start_index if continuing
+            for idx, (x, y, z, ix, iy, iz) in enumerate(generate_scan_positions(config)):
+                # Skip already completed voxels when continuing
+                if idx < start_index:
+                    continue
+                
+                # Δ distance to next voxel
+                dx, dy, dz = x - current_x, y - current_y, z - current_z
+                
+                if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+                    s = time.time()
+                    move_relative(printer, dx, dy, dz, 
+                                config.feed_rate, config.step_calibration)
+                    move_time = time.time() - s
+                    remaining_delay = max(MIN_DELAY - move_time, 0)
+                    time.sleep(remaining_delay)
+                else:
+                    # Already at target voxel – no motion
+                    move_time = 0.0
+                    remaining_delay = MIN_DELAY
+                    time.sleep(remaining_delay)
+                    s = time.time() - MIN_DELAY  # For logging consistency
+                
+                current_x, current_y, current_z = x, y, z
+                
+                # print(f"Move time: {move_time:.2f}s, Added delay: {remaining_delay:.2f}s")
+                print(f"Total time once: {time.time() - s:.2f}s")
+                
+                # # Capture measurement
+                # t1, v1 = capture_waveform(scope, 1)
+                # # Process measurement - Remove DC offset before calculating RMS
+                # v1_ac = v1 - np.mean(v1)  # Remove DC component
+                # rms_value = np.sqrt(np.mean(v1_ac**2))  # Calculate RMS of AC component
+                chA_ptp_mV, chC_ptp_mV = scope.read_magnitude_avg()
+                print(f"  Ch1 Peak to Peak: {chA_ptp_mV:.3f}mV")
+                
+                # Store in 3D array
+                # ix = int(x / config.voxel_size)
+                # iy = int(y / config.voxel_size)
+                # iz = int(z / config.voxel_size)
+                pressure_field[ix, iy, iz] = chA_ptp_mV
+                
+                # Save individual measurement
+                # voxel_data = {
+                #     'voxel_indices': [ix, iy, iz],
+                #     'position_mm': [x, y, z],  # Physical position in scan volume
+                #     # 'time': t1,
+                #     # 'ch1_voltage': v1,
+                #     'magnitude': chA_ptp_mV
+                # }
+                # np.save(output_path / f'voxel_{ix:03d}_{iy:03d}_{iz:03d}.npy', voxel_data)
+                
+                # Save checkpoint for resume capability
+                checkpoint = {
+                    'last_index': idx,
+                    'last_position': [x, y, z],
+                    'last_indices': [ix, iy, iz],
+                    'total_voxels': total_voxels,
+                    'timestamp': timestamp
+                }
+                np.save(output_path / 'checkpoint.npy', checkpoint)
+                
+                # Progress update
+                if idx % 10 == 0:
+                    elapsed = time.time() - start_time
+                    progress = (idx + 1) / total_voxels
+                    eta = elapsed / progress - elapsed if progress > 0 else 0
+                    print(f"Progress: {progress*100:.1f}% | "
+                        f"Voxel {idx+1}/{total_voxels} | "
+                        f"Indices: ({ix}, {iy}, {iz}) | "
+                        f"Position: ({x:.1f}, {y:.1f}, {z:.1f}) mm | "
+                        f"Peak To Peak: {chA_ptp_mV:.3f}mV | "
+                        f"ETA: {eta/60:.1f} min")
+                        
+                # Auto-save partial data every 500 voxels
+                if idx % 500 == 0 and idx > 0:
+                    np.save(output_path / 'pressure_field_partial.npy', pressure_field)
+                    print(f"  → Auto-saved partial data at voxel {idx}")
+                
+                # Auto-save each voxel data
+                line = f"{ix, iy, iz, chA_ptp_mV}\n"
+                pressure_log.write(line)
+                pressure_log.flush()
             
-            # Save individual measurement
-            # voxel_data = {
-            #     'voxel_indices': [ix, iy, iz],
-            #     'position_mm': [x, y, z],  # Physical position in scan volume
-            #     # 'time': t1,
-            #     # 'ch1_voltage': v1,
-            #     'magnitude': chA_ptp_mV
-            # }
-            # np.save(output_path / f'voxel_{ix:03d}_{iy:03d}_{iz:03d}.npy', voxel_data)
+            # Save complete pressure field
+            np.save(output_path / 'pressure_field.npy', pressure_field)
             
-            # Save checkpoint for resume capability
-            checkpoint = {
-                'last_index': idx,
-                'last_position': [x, y, z],
-                'last_indices': [ix, iy, iz],
-                'total_voxels': total_voxels,
-                'timestamp': timestamp
-            }
-            np.save(output_path / 'checkpoint.npy', checkpoint)
+            # Delete checkpoint file since scan completed successfully
+            checkpoint_file = output_path / 'checkpoint.npy'
+            if checkpoint_file.exists():
+                checkpoint_file.unlink()
+                print("Checkpoint file removed (scan completed successfully)")
             
-            # Progress update
-            if idx % 10 == 0:
-                elapsed = time.time() - start_time
-                progress = (idx + 1) / total_voxels
-                eta = elapsed / progress - elapsed if progress > 0 else 0
-                print(f"Progress: {progress*100:.1f}% | "
-                      f"Voxel {idx+1}/{total_voxels} | "
-                      f"Indices: ({ix}, {iy}, {iz}) | "
-                      f"Position: ({x:.1f}, {y:.1f}, {z:.1f}) mm | "
-                      f"Peak To Peak: {chA_ptp_mV:.3f}mV | "
-                      f"ETA: {eta/60:.1f} min")
-                      
-            # Auto-save partial data every voxels
-            np.save(output_path / 'pressure_field_partial.npy', pressure_field)
-            print(f"  → Auto-saved partial data at voxel {idx}")
-        
-        # Save complete pressure field
-        np.save(output_path / 'pressure_field.npy', pressure_field)
-        
-        # Delete checkpoint file since scan completed successfully
-        checkpoint_file = output_path / 'checkpoint.npy'
-        if checkpoint_file.exists():
-            checkpoint_file.unlink()
-            print("Checkpoint file removed (scan completed successfully)")
-        
-        # Return to origin position
-        print("\nReturning to origin position (0,0,0)...")
-        move_to_position(printer, 0, 0, 0, config.feed_rate, config.step_calibration)
-        
-        elapsed_total = time.time() - start_time
-        print(f"\nScan complete!")
-        print(f"Total time: {elapsed_total/60:.1f} minutes")
-        print(f"Data saved to: {output_path}")
-        
-    except KeyboardInterrupt:
-        print("\n\nProgram interrupted by user!")
-        # Save partial data if we have it
-        if 'pressure_field' in locals():
-            np.save(output_path / 'pressure_field_partial.npy', pressure_field)
-            print(f"Partial data saved to: {output_path}")
-        
-    finally:
-        # Cleanup
-        if printer:
-            try:
-                send_gcode(printer, "M84")  # Disable steppers
-                printer.close()
-            except:
-                pass
-        if scope:
-            try:
-                scope.close()
-            except:
-                pass
+            # Return to origin position
+            print("\nReturning to origin position (0,0,0)...")
+            move_to_position(printer, 0, 0, 0, config.feed_rate, config.step_calibration)
+            
+            elapsed_total = time.time() - start_time
+            print(f"\nScan complete!")
+            print(f"Total time: {elapsed_total/60:.1f} minutes")
+            print(f"Data saved to: {output_path}")
+            
+        except KeyboardInterrupt:
+            print("\n\nProgram interrupted by user!")
+            # Save partial data if we have it
+            if 'pressure_field' in locals():
+                np.save(output_path / 'pressure_field_partial.npy', pressure_field)
+                print(f"Partial data saved to: {output_path}")
+            
+        finally:
+            # Cleanup
+            if printer:
+                try:
+                    send_gcode(printer, "M84")  # Disable steppers
+                    printer.close()
+                except:
+                    pass
+            if scope:
+                try:
+                    scope.close()
+                except:
+                    pass
 
 if __name__ == "__main__":
     main() 

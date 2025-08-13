@@ -251,7 +251,7 @@ def pico_read_magnitude(chandle, status, pico_config):
 
     return chA_PeakToPeak, chC_PeakToPeak
 
-def pico_read_magnitude_avg(chandle, status, pico_config, num_samples = 10):
+def pico_read_magnitude_avg(chandle, status, pico_config, num_samples=10):
 
     chA_avg = 0.0
     chC_avg = 0.0
