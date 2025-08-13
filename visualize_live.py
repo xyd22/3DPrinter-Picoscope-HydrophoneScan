@@ -75,9 +75,17 @@ class PressureFieldVisualizer:
                         ix = int(parts[0].strip())
                         iy = int(parts[1].strip())
                         iz = int(parts[2].strip())
-                        value = float(parts[3].strip())
+                        
+                        # Handle np.float64(...) format
+                        value_str = parts[3].strip()
+                        if value_str.startswith("np.float64("):
+                            value = float(value_str.replace("np.float64(", "").replace(")", ""))
+                        else:
+                            value = float(value_str)
+                        
                         result.append([ix, iy, iz, value])
-                    except ValueError:
+                    except ValueError as e:
+                        print(f"Error parsing line: {line} - {e}")
                         pass
         return result
         

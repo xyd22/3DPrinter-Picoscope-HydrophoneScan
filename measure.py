@@ -75,7 +75,7 @@ if os.name != 'nt': # Linux
     SCOPE_SERIAL = 'DS1ZE26CM00690'
     GENERATOR_SERIAL = '2120'
 else: # Windows
-    PRINTER_SERIAL = 'COM10'
+    PRINTER_SERIAL = 'COM4'
 
 # ---------- Configuration ----------
 @dataclass
@@ -725,7 +725,7 @@ def main():
                     print(f"  → Auto-saved partial data at voxel {idx}")
                 
                 # Auto-save each voxel data
-                line = f"{ix, iy, iz, chA_ptp_mV}\n"
+                line = f"{ix, iy, iz, chA_ptp_mV:.6f}\n"
                 pressure_log.write(line)
                 pressure_log.flush()
             
