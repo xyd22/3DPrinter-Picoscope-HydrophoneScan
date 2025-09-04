@@ -354,14 +354,14 @@ def generate_scan_positions(config: MeasurementConfig):
         else:
             z_indices = reversed(range(nz))  # nz-1, nz-2, ... 0
             
-        for iz_idx, iz in enumerate(z_indices):
+        for iz in z_indices:
             z = iz * config.voxel_size
             
             # X serpentine pattern
             # Need to track actual position in the sweep, not just iz value
             # For even Y: iz_idx matches iz
             # For odd Y: iz_idx is 0 when iz is nz-1, 1 when iz is nz-2, etc.
-            if (iz_idx + iy) % 2 == 0:
+            if (iz + iy) % 2 == 0:
                 # Sweep from 0 to X
                 for ix in range(nx):
                     x = ix * config.voxel_size
