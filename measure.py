@@ -337,7 +337,7 @@ def manual_control_mode(ser, scope, feed_rate, voxels, jog_step=1.0, calibration
 
 # ---------- Scan Pattern ----------
 def generate_scan_positions(config: MeasurementConfig):
-    """Generate voxel positions using serpentine pattern in X-Z plane, then Y"""
+    """Generate voxel positions using serpentine pattern in 3D space"""
     nx = int(config.voxels_x)
     ny = int(config.voxels_y)
     nz = int(config.voxels_z)
@@ -361,7 +361,7 @@ def generate_scan_positions(config: MeasurementConfig):
             # Need to track actual position in the sweep, not just iz value
             # For even Y: iz_idx matches iz
             # For odd Y: iz_idx is 0 when iz is nz-1, 1 when iz is nz-2, etc.
-            if iz_idx % 2 == 0:
+            if (iz_idx + iy) % 2 == 0:
                 # Sweep from 0 to X
                 for ix in range(nx):
                     x = ix * config.voxel_size

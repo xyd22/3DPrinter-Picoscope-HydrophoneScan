@@ -1,30 +1,14 @@
-import time
-import sys
 import numpy as np
-import serial
-import pyvisa
-import datetime
-import pathlib
-# import tty
-import os
-import ctypes
-from dataclasses import dataclass
-from typing import Generator
-if os.name != 'nt': # Linux
-    import termios
-    import tty
-else: # Windows
-    import msvcrt
-# import fn_ctrl
-from picoscope_ctrl import *
 
-from picosdk.ps5000a import ps5000a as ps
-from picosdk.functions import adc2mV, assert_pico_ok, mV2adc
+pressure_filed = np.load('./pressure_field_data/20250902_203004/pressure_field.npy')
+focus_index = np.max(pressure_filed, axis = 0) > 10
+focus_pressure_field = pressure_filed[:, focus_index]
+max_index = np.argmax(focus_pressure_field, axis = 0)
+print(focus_index)
+# print(max_index)
 
+X = np.linspace(1, max_index.shape[0], max_index.shape[0]).reshape(-1, 1)
 
-import numpy as np
-from vtk.util.numpy_support import numpy_to_vtk
+slope, intercept = np.polyfit(X.flatten(), max_index, 1)
 
-arr = np.array([1, 2, 3], dtype=np.float32)
-vtk_arr = numpy_to_vtk(arr)
-print(vtk_arr)
+print(slope, intercept) # -0.46081277213352684 ~ -0.5
