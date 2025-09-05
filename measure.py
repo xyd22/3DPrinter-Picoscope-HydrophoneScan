@@ -725,7 +725,7 @@ def main():
                     print(f"  → Auto-saved partial data at voxel {idx}")
                 
                 # Auto-save each voxel data
-                line = f"{ix, iy, iz, chA_ptp_mV:.6f}\n"
+                line = f"{ix}, {iy}, {iz}, {chA_ptp_mV:.6f}\n"
                 pressure_log.write(line)
                 pressure_log.flush()
             
